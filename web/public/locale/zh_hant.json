@@ -224,7 +224,12 @@
                 "label": "最大冷卻時間（秒）",
                 "placeholder": "請輸入最大冷卻時間"
             },
-            "hint": "當渠道連續失敗達到閾值後觸發熔斷，冷卻時間按指數退避增長，上限為最大冷卻時間"
+            "hint": "當渠道連續失敗達到閾值後觸發熔斷，冷卻時間按指數退避增長，上限為最大冷卻時間",
+            "resetLabel": "重置熔斷器",
+            "resetTooltip": "手動重置所有渠道的熔斷狀態，立即恢復被熔斷的渠道",
+            "resetButton": "重置全部",
+            "resetSuccess": "熔斷器已重置",
+            "resetFailed": "重置失敗"
         },
         "outlierRetirement": {
             "title": "被動離群退役",

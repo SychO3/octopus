@@ -1,11 +1,15 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import { Hash, HeartPulse, ShieldCheck, Timer, TimerOff, type LucideIcon } from 'lucide-react';
+import { Hash, HeartPulse, ShieldCheck, Timer, TimerOff, RotateCcw, Loader2, type LucideIcon } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import { toast } from '@/components/common/Toast';
 import { SettingKey } from '@/api/endpoints/setting';
 import { SettingCard, SettingRow, SettingSection, useSettingField, useSettingToggle } from './shared';
+import { apiClient } from '@/api/client';
+import { useMutation } from '@tanstack/react-query';
 
 // min/max 与后端 model.Setting.Validate() 的边界保持一致，前端先行约束整数范围。
 const OUTLIER_FIELDS: { key: string; labelKey: string; min: number; max?: number }[] = [
@@ -47,6 +51,39 @@ function NumberFieldRow({ settingKey, label, placeholder, tooltip, icon, min, ma
     );
 }
 
+function ResetCircuitBreakerRow() {
+    const t = useTranslations('setting.circuitBreaker');
+    const resetMutation = useMutation({
+        mutationFn: () => apiClient.post('/api/v1/channel/reset-circuit', {}),
+    });
+
+    const handleReset = () => {
+        resetMutation.mutate(undefined, {
+            onSuccess: () => toast.success(t('resetSuccess')),
+            onError: () => toast.error(t('resetFailed')),
+        });
+    };
+
+    return (
+        <SettingRow icon={RotateCcw} label={t('resetLabel')} tooltip={t('resetTooltip')}>
+            <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReset}
+                disabled={resetMutation.isPending}
+                className="rounded-xl text-xs"
+            >
+                {resetMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                ) : (
+                    <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                )}
+                {t('resetButton')}
+            </Button>
+        </SettingRow>
+    );
+}
+
 export function SettingReliability() {
     const t = useTranslations('setting');
     const outlier = useSettingToggle(SettingKey.OutlierRetireEnabled);
@@ -79,6 +116,7 @@ export function SettingReliability() {
                 placeholder={t('circuitBreaker.maxCooldown.placeholder')}
                 icon={TimerOff}
             />
+            <ResetCircuitBreakerRow />
 
             {/* 被动离群退役 */}
             <SettingSection title={t('outlierRetirement.title')} tooltip={t('outlierRetirement.hint')} />
