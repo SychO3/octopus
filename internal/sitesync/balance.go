@@ -156,7 +156,13 @@ func fetchTodayIncomeFromLogs(ctx context.Context, siteRecord *model.Site, accou
 	endTs := endOfDay.Unix()
 
 	baseURL := buildSiteURL(siteRecord.BaseURL, "/api/log/self")
-	headers := anyRouterAuthHeaders(accessToken, userID)
+	var headers map[string]string
+	if strings.HasPrefix(accessToken, "session=") || strings.Contains(accessToken, "session=") {
+		headers = map[string]string{"Cookie": accessToken}
+		anyRouterAddUserIDHeaders(headers, userID)
+	} else {
+		headers = anyRouterAuthHeaders(accessToken, userID)
+	}
 
 	var total float64
 	anyResponse := false
