@@ -55,6 +55,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/last-sync-time", http.MethodGet).
 				Handle(getLastSyncTime),
+		).
+		AddRoute(
+			router.NewRoute("/reset-circuit", http.MethodPost).
+				Handle(resetCircuitBreaker),
 		)
 }
 
@@ -211,4 +215,23 @@ func syncChannel(c *gin.Context) {
 func getLastSyncTime(c *gin.Context) {
 	time := task.GetLastSyncModelsTime()
 	resp.Success(c, time)
+}
+
+func resetCircuitBreaker(c *gin.Context) {
+	var req struct {
+		ChannelID int `json:"channel_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// 不传 channel_id 则重置所有
+		op.ResetAllBalancerState()
+		resp.Success(c, gin.H{"reset": "all"})
+		return
+	}
+	if req.ChannelID > 0 {
+		op.ResetBalancerStateForChannel(req.ChannelID)
+		resp.Success(c, gin.H{"reset": req.ChannelID})
+	} else {
+		op.ResetAllBalancerState()
+		resp.Success(c, gin.H{"reset": "all"})
+	}
 }
