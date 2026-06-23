@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
+	"github.com/bestruirui/octopus/internal/impersonate"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/coder/websocket"
@@ -462,6 +463,9 @@ func buildUpstreamWSHeaders(clientHeaders http.Header, channel *dbmodel.Channel,
 	} else {
 		headers["User-Agent"] = values[:1]
 	}
+	// 客户端模拟
+	impersonate.ApplyClientHeadersToMap(headers, channel, "")
+	// CustomHeader 优先级最高
 	if channel != nil {
 		for _, header := range channel.CustomHeader {
 			if strings.TrimSpace(header.HeaderKey) == "" {

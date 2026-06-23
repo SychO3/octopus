@@ -29,6 +29,29 @@ func ApplyClientHeaders(req *http.Request, channel *model.Channel, modelName str
 	}
 }
 
+// ApplyClientHeadersToMap 与 ApplyClientHeaders 相同逻辑，但操作 http.Header map（用于 WebSocket 等非标准路径）
+func ApplyClientHeadersToMap(headers http.Header, channel *model.Channel, modelName string) {
+	provider := detectProvider(channel)
+	version := GetEffectiveVersion(provider)
+
+	var profile HeaderProfile
+	switch provider {
+	case ProviderClaude:
+		profile = BuildClaudeProfile(version, modelName)
+	case ProviderCodex:
+		profile = BuildCodexProfile(version, channel.ID)
+	case ProviderGemini:
+		profile = BuildGeminiProfile(version, modelName)
+	default:
+		return
+	}
+
+	headers.Set("User-Agent", profile.UserAgent)
+	for k, v := range profile.ExtraHeaders {
+		headers.Set(k, v)
+	}
+}
+
 func detectProvider(channel *model.Channel) ProviderType {
 	channelType := outbound.OutboundType(channel.Type)
 	switch channelType {
