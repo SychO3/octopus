@@ -1,0 +1,95 @@
+# ==============================
+# Stage 1: Frontend Builder
+# ==============================
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /build/web
+
+# Install pnpm
+RUN npm install -g pnpm
+
+# Copy frontend files
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+COPY web/ ./
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+
+# Build frontend (static export)
+RUN pnpm build
+
+# ==============================
+# Stage 2: Backend Builder
+# ==============================
+FROM golang:1.25-alpine AS backend-builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apk add --no-cache git python3 py3-pip curl
+
+# Copy Go modules files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy backend source
+COPY . .
+
+# Copy frontend build output from previous stage
+COPY --from=frontend-builder /build/web/out ./static/out
+
+# Update price data
+COPY scripts/updatePrice.py ./scripts/
+RUN python3 scripts/updatePrice.py || echo "Price update failed, continuing..."
+
+# Build Go binary
+ARG GIT_VERSION=dev
+ARG GIT_AUTHOR=hureru
+ARG BUILD_TIME
+ARG COMMIT_ID
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -o octopus \
+    -ldflags="-s -w \
+    -X 'github.com/bestruirui/octopus/internal/conf.Version=${GIT_VERSION}' \
+    -X 'github.com/bestruirui/octopus/internal/conf.BuildTime=${BUILD_TIME}' \
+    -X 'github.com/bestruirui/octopus/internal/conf.Author=${GIT_AUTHOR}' \
+    -X 'github.com/bestruirui/octopus/internal/conf.Commit=${COMMIT_ID}'" \
+    -tags=jsoniter \
+    .
+
+# ==============================
+# Stage 3: Runtime
+# ==============================
+FROM alpine:latest
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates tzdata && \
+    cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
+
+# Copy binary from builder
+COPY --from=backend-builder /build/octopus /app/octopus
+
+# Run as non-root user
+RUN addgroup -g 1000 octopus && \
+    adduser -D -u 1000 -G octopus octopus && \
+    chown -R octopus:octopus /app
+
+USER octopus
+
+# Create data directory (after user switch ensures correct ownership)
+RUN mkdir -p /app/data
+
+# Expose port
+EXPOSE 8080
+
+# Health check (check if port is listening)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
+
+ENTRYPOINT ["/app/octopus"]
+CMD ["start"]

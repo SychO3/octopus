@@ -34,9 +34,37 @@ go run main.go start
 ./scripts/build.sh release              # 构建所有平台
 ```
 
-### Docker
+### Docker 本地开发部署
 ```bash
-docker compose up -d
+# 首次需要创建 data 目录
+mkdir -p data && chmod 777 data
+
+# 构建并启动 (代码变更后重新执行)
+docker compose -f docker-compose.dev.yml up -d --build
+
+# 查看日志
+docker compose -f docker-compose.dev.yml logs -f
+
+# 停止
+docker compose -f docker-compose.dev.yml down
+```
+
+初始账号 `admin` / `admin`，服务端口 8080。
+构建配置见 `Dockerfile.dev` + `docker-compose.dev.yml`。
+
+**每次修改代码后必须 commit，再构建部署。**
+
+### Nginx 反向代理配置
+
+生产环境通过宝塔面板配置 Nginx 反向代理：
+- 域名：`ai.515111.xyz`
+- 代理目标：`http://127.0.0.1:8080`
+- 配置文件：`/www/server/panel/vhost/nginx/ai.515111.xyz.conf`
+- 已配置 SSL、WebSocket 支持、流式响应优化（300s 超时，禁用缓冲）
+
+修改配置后重载 Nginx：
+```bash
+nginx -t && nginx -s reload
 ```
 
 ## 架构概览
