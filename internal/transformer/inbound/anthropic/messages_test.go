@@ -71,6 +71,40 @@ func TestAnthropicRequestKeepsNonEmptyThinkingAnthropic(t *testing.T) {
 	}
 }
 
+func TestAnthropicRequestDropsUnsignedThinkingHistory(t *testing.T) {
+	inbound := &MessagesInbound{}
+	body := []byte(`{
+		"model":"claude-opus-4-6",
+		"max_tokens":16,
+		"messages":[{
+			"role":"assistant",
+			"content":[
+				{"type":"thinking","thinking":"openai compat reasoning","signature":""},
+				{"type":"text","text":"visible answer"},
+				{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"pwd"}}
+			]
+		}]
+	}`)
+
+	req, err := inbound.TransformRequest(context.Background(), body)
+	if err != nil {
+		t.Fatalf("TransformRequest() error = %v", err)
+	}
+	if len(req.Messages) != 1 {
+		t.Fatalf("expected one assistant message, got %+v", req.Messages)
+	}
+	msg := req.Messages[0]
+	if msg.ReasoningContent != nil || msg.ReasoningSignature != nil || len(msg.ReasoningBlocks) != 0 {
+		t.Fatalf("unsigned thinking must not be replayed, got content=%v signature=%v blocks=%+v", msg.ReasoningContent, msg.ReasoningSignature, msg.ReasoningBlocks)
+	}
+	if msg.Content.Content == nil || *msg.Content.Content != "visible answer" {
+		t.Fatalf("expected visible text to remain, got %+v", msg.Content)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].ID != "toolu_1" {
+		t.Fatalf("expected tool_use to remain, got %+v", msg.ToolCalls)
+	}
+}
+
 func TestTransformResponseEmitsGeminiThoughtSignatureShim(t *testing.T) {
 	inbound := &MessagesInbound{}
 	out, err := inbound.TransformResponse(context.Background(), &model.InternalLLMResponse{
