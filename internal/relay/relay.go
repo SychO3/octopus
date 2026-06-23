@@ -27,6 +27,7 @@ import (
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/tmaxmax/go-sse"
 )
 
@@ -1752,9 +1753,37 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 	var openAIStream model.OutboundStreamEventTransformer
 	var openAIProtocol string
 	var openAIStreamBuffer []byte
+	var openAIChatTerminal openAIChatTerminalState
 	inboundStream, _ := ra.inAdapter.(model.InboundStreamEventTransformer)
 
+	flushOpenAIChatTerminal := func() error {
+		if openAIProtocol != "openai_chat" || inboundStream == nil {
+			return nil
+		}
+		events := flushOpenAIChatTerminalEvents(&openAIChatTerminal)
+		if len(events) == 0 {
+			return nil
+		}
+		converted, err := inboundStream.TransformStreamEvents(ctx, events)
+		if err != nil {
+			return err
+		}
+		if len(converted) == 0 {
+			return nil
+		}
+		_, _ = rawStream.Write(converted)
+		if _, werr := writer.Write(converted); werr != nil {
+			return werr
+		}
+		ra.streamPayloadWritten.Store(true)
+		writer.Flush()
+		return nil
+	}
+
 	finishStream := func(c context.Context) error {
+		if err := flushOpenAIChatTerminal(); err != nil {
+			return err
+		}
 		if !ra.streamPayloadWritten.Load() {
 			return errEmptyUpstreamStream
 		}
@@ -1850,7 +1879,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 				continue
 			}
 			chunk := r.chunk
-			if converted, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, r.chunk, openAIProtocol, &openAIStream, inboundStream, &openAIStreamBuffer); err != nil {
+			if converted, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, r.chunk, openAIProtocol, &openAIStream, inboundStream, &openAIStreamBuffer, &openAIChatTerminal); err != nil {
 				return err
 			} else if protocol != "" {
 				openAIProtocol = protocol
@@ -1974,11 +2003,82 @@ func convertOpenAIResponseToAnthropic(ctx context.Context, body []byte, response
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to convert OpenAI response from Anthropic channel: %w", err)
 	}
+	if _, ok := outAdapter.(*openaiOutbound.ChatOutbound); ok {
+		mergeSplitOpenAIChatChoices(internalResponse)
+	}
 	converted, err := inbound.Get(inbound.InboundTypeAnthropic).TransformResponse(ctx, internalResponse)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to render converted Anthropic response: %w", err)
 	}
 	return converted, true, nil
+}
+
+func mergeSplitOpenAIChatChoices(response *model.InternalLLMResponse) {
+	if response == nil || len(response.Choices) <= 1 {
+		return
+	}
+
+	merged := response.Choices[0]
+	if merged.Message == nil {
+		merged.Message = &model.Message{Role: "assistant"}
+	}
+	if merged.Message.Role == "" {
+		merged.Message.Role = "assistant"
+	}
+
+	for idx := 1; idx < len(response.Choices); idx++ {
+		choice := response.Choices[idx]
+		if choice.Message != nil {
+			mergeOpenAIChatMessage(merged.Message, choice.Message)
+		}
+		if merged.FinishReason == nil && choice.FinishReason != nil {
+			merged.FinishReason = choice.FinishReason
+		}
+	}
+
+	response.Choices = []model.Choice{merged}
+}
+
+func mergeOpenAIChatMessage(dst, src *model.Message) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.Role == "" {
+		dst.Role = src.Role
+	}
+	if src.ReasoningContent != nil && *src.ReasoningContent != "" {
+		if dst.ReasoningContent == nil {
+			dst.ReasoningContent = lo.ToPtr("")
+		}
+		*dst.ReasoningContent += *src.ReasoningContent
+	}
+	if src.Reasoning != nil && *src.Reasoning != "" {
+		if dst.Reasoning == nil {
+			dst.Reasoning = lo.ToPtr("")
+		}
+		*dst.Reasoning += *src.Reasoning
+	}
+	if src.ReasoningSignature != nil && *src.ReasoningSignature != "" && dst.ReasoningSignature == nil {
+		dst.ReasoningSignature = src.ReasoningSignature
+	}
+	if len(src.ReasoningBlocks) > 0 {
+		dst.ReasoningBlocks = append(dst.ReasoningBlocks, src.ReasoningBlocks...)
+	}
+	if src.Content.Content != nil && *src.Content.Content != "" {
+		if dst.Content.Content == nil {
+			dst.Content.Content = lo.ToPtr("")
+		}
+		*dst.Content.Content += *src.Content.Content
+	}
+	if len(src.Content.MultipleContent) > 0 {
+		dst.Content.MultipleContent = append(dst.Content.MultipleContent, src.Content.MultipleContent...)
+	}
+	if len(src.ToolCalls) > 0 {
+		dst.ToolCalls = append(dst.ToolCalls, src.ToolCalls...)
+	}
+	if src.Refusal != "" {
+		dst.Refusal += src.Refusal
+	}
 }
 
 func convertOpenAIStreamChunkToAnthropic(
@@ -1988,6 +2088,7 @@ func convertOpenAIStreamChunkToAnthropic(
 	outAdapter *model.OutboundStreamEventTransformer,
 	inAdapter model.InboundStreamEventTransformer,
 	pending *[]byte,
+	chatTerminal *openAIChatTerminalState,
 ) ([]byte, string, error) {
 	if len(chunk) == 0 || inAdapter == nil {
 		return nil, currentProtocol, nil
@@ -2022,6 +2123,9 @@ func convertOpenAIStreamChunkToAnthropic(
 		if err != nil {
 			return nil, protocol, err
 		}
+		if protocol == "openai_chat" {
+			events = deferOpenAIChatTerminalEvents(events, chatTerminal)
+		}
 		if len(events) == 0 {
 			continue
 		}
@@ -2032,6 +2136,50 @@ func convertOpenAIStreamChunkToAnthropic(
 		out.Write(converted)
 	}
 	return out.Bytes(), protocol, nil
+}
+
+type openAIChatTerminalState struct {
+	stop  *model.StreamEvent
+	usage *model.StreamEvent
+	done  bool
+}
+
+func deferOpenAIChatTerminalEvents(events []model.StreamEvent, terminal *openAIChatTerminalState) []model.StreamEvent {
+	if terminal == nil || len(events) == 0 {
+		return events
+	}
+	filtered := events[:0]
+	for _, event := range events {
+		switch event.Kind {
+		case model.StreamEventKindMessageStop:
+			ev := event
+			terminal.stop = &ev
+		case model.StreamEventKindUsageDelta:
+			ev := event
+			terminal.usage = &ev
+		case model.StreamEventKindDone:
+			terminal.done = true
+		default:
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
+func flushOpenAIChatTerminalEvents(terminal *openAIChatTerminalState) []model.StreamEvent {
+	if terminal == nil || terminal.stop == nil {
+		return nil
+	}
+	events := []model.StreamEvent{*terminal.stop}
+	if terminal.usage != nil {
+		events = append(events, *terminal.usage)
+	} else if terminal.done {
+		events = append(events, model.StreamEvent{Kind: model.StreamEventKindDone})
+	}
+	terminal.stop = nil
+	terminal.usage = nil
+	terminal.done = false
+	return events
 }
 
 func popCompleteSSEFrames(pending *[]byte) [][]byte {

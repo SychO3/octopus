@@ -197,6 +197,68 @@ func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIResponsesSSE(t *t
 	}
 }
 
+func TestHandleStreamResponsePassthroughAnthropicDefersSplitOpenAIChatStop(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rawSSE := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"reasoning_content":"thinking first"},"finish_reason":"stop"}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":1,"delta":{"content":"visible answer"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	internalReq := &transformerModel.InternalLLMRequest{
+		Model:        "claude-opus-4-6",
+		Stream:       boolPtr(true),
+		RawAPIFormat: transformerModel.APIFormatAnthropicMessage,
+	}
+	req := &relayRequest{
+		c:               c,
+		inAdapter:       inbound.Get(inbound.InboundTypeAnthropic),
+		internalRequest: internalReq,
+		metrics:         NewRelayMetrics(1, internalReq.Model, nil, internalReq),
+		apiKeyID:        1,
+		requestModel:    internalReq.Model,
+	}
+	ra := &relayAttempt{
+		relayRequest: req,
+		outAdapter:   outbound.Get(outbound.OutboundTypeAnthropic),
+	}
+
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+		},
+		Body: io.NopCloser(bytes.NewReader([]byte(rawSSE))),
+	}
+
+	if err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response); err != nil {
+		t.Fatalf("handleStreamResponsePassthroughAnthropic() error = %v", err)
+	}
+	got := recorder.Body.String()
+	textIdx := strings.Index(got, `"text":"visible answer"`)
+	stopIdx := strings.Index(got, "event:message_stop")
+	if textIdx < 0 {
+		t.Fatalf("expected visible answer to be emitted, got %q", got)
+	}
+	if stopIdx < 0 {
+		t.Fatalf("expected message_stop to be emitted, got %q", got)
+	}
+	if stopIdx < textIdx {
+		t.Fatalf("expected message_stop after visible answer, got %q", got)
+	}
+}
+
 func TestConvertOpenAIStreamChunkToAnthropicBuffersPartialFrame(t *testing.T) {
 	ctx := context.Background()
 	inboundStream, ok := inbound.Get(inbound.InboundTypeAnthropic).(transformerModel.InboundStreamEventTransformer)
@@ -207,7 +269,8 @@ func TestConvertOpenAIStreamChunkToAnthropicBuffersPartialFrame(t *testing.T) {
 	var pending []byte
 
 	first := []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,`)
-	out, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, first, "", &outboundStream, inboundStream, &pending)
+	var terminal openAIChatTerminalState
+	out, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, first, "", &outboundStream, inboundStream, &pending, &terminal)
 	if err != nil {
 		t.Fatalf("first partial chunk returned error: %v", err)
 	}
@@ -216,7 +279,7 @@ func TestConvertOpenAIStreamChunkToAnthropicBuffersPartialFrame(t *testing.T) {
 	}
 
 	second := []byte(`"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n")
-	out, protocol, err = convertOpenAIStreamChunkToAnthropic(ctx, second, protocol, &outboundStream, inboundStream, &pending)
+	out, protocol, err = convertOpenAIStreamChunkToAnthropic(ctx, second, protocol, &outboundStream, inboundStream, &pending, &terminal)
 	if err != nil {
 		t.Fatalf("second chunk returned error: %v", err)
 	}
@@ -683,6 +746,72 @@ func TestHandlerConvertsOpenAIChatResponseFromAnthropicPassthrough(t *testing.T)
 	}
 	if got.Usage.InputTokens != 3 || got.Usage.OutputTokens != 2 {
 		t.Fatalf("expected converted usage input=3 output=2, got %+v", got.Usage)
+	}
+}
+
+func TestHandlerConvertsSplitOpenAIChatChoicesFromAnthropicPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayTestDB(t)
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"bad_split","object":"chat.completion","model":"claude-opus-4.6","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"thinking first"},"finish_reason":"stop"},{"index":1,"message":{"content":"visible answer"},"finish_reason":null}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
+	}))
+	defer server.Close()
+
+	channel := &model.Channel{
+		Name:     "relay-anthropic-openai-chat-split-convert",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		BaseUrls: []model.BaseUrl{{URL: server.URL + "/v1"}},
+		Model:    "claude-opus-4-6",
+		Keys:     []model.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}
+	if err := op.ChannelCreate(channel, ctx); err != nil {
+		t.Fatalf("ChannelCreate failed: %v", err)
+	}
+
+	group := &model.Group{Name: "relay-anthropic-openai-chat-split-convert-group", Mode: model.GroupModeFailover}
+	if err := op.GroupCreate(group, ctx); err != nil {
+		t.Fatalf("GroupCreate failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&model.GroupItem{GroupID: group.ID, ChannelID: channel.ID, ModelName: "claude-opus-4-6", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"relay-anthropic-openai-chat-split-convert-group","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected relay handler to succeed with converted response, got status %d body %s", recorder.Code, recorder.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("expected channel to be attempted once, got %d", hits.Load())
+	}
+	var got struct {
+		Content []struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("expected valid Anthropic response JSON, got %v body %s", err, recorder.Body.String())
+	}
+	if len(got.Content) != 2 {
+		t.Fatalf("expected thinking and text blocks, got %#v body %s", got.Content, recorder.Body.String())
+	}
+	if got.Content[0].Type != "thinking" || got.Content[0].Thinking != "thinking first" {
+		t.Fatalf("expected first block to contain reasoning, got %#v", got.Content)
+	}
+	if got.Content[1].Type != "text" || got.Content[1].Text != "visible answer" {
+		t.Fatalf("expected second block to contain visible answer, got %#v", got.Content)
 	}
 }
 
