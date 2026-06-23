@@ -161,6 +161,10 @@ func initPostgres(dsn string, config *gorm.Config) (*gorm.DB, error) {
 }
 
 func Close() error {
+	// SQLite: 关闭前强制 WAL checkpoint，防止 Docker 重启丢数据
+	if db.Dialector.Name() == "sqlite" {
+		db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	}
 	sqlDB, err := db.DB()
 	if err != nil {
 		return err
