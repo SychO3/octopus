@@ -78,9 +78,9 @@ type Channel struct {
 	ParamOverride *string               `json:"param_override"`
 	ChannelProxy  *string               `json:"-" gorm:"column:channel_proxy"`
 	Stats         *StatsChannel         `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
-	MatchRegex    *string               `json:"match_regex"`
-	Managed       bool                  `json:"managed" gorm:"-"`
-	ManagedSource *ManagedChannelSource `json:"managed_source,omitempty" gorm:"-"`
+	MatchRegex         *string               `json:"match_regex"`
+	Managed            bool                  `json:"managed" gorm:"-"`
+	ManagedSource      *ManagedChannelSource `json:"managed_source,omitempty" gorm:"-"`
 }
 
 func (c *Channel) UnmarshalJSON(data []byte) error {

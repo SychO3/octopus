@@ -9,6 +9,7 @@ import { SettingNetwork } from './Network';
 import { SettingReliability } from './Reliability';
 import { SettingSyncTasks } from './SyncTasks';
 import { SettingData } from './Data';
+import { SettingImpersonate } from './Impersonate';
 
 export function Setting() {
     return (
@@ -18,6 +19,7 @@ export function Setting() {
                 <SettingInfo key="setting-info" />
                 <SettingAppearance key="setting-appearance" />
                 <SettingNetwork key="setting-network" />
+                <SettingImpersonate key="setting-impersonate" />
                 <SettingAccount key="setting-account" />
                 <SettingReliability key="setting-reliability" />
                 <SettingSyncTasks key="setting-sync-tasks" />

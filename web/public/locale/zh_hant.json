@@ -461,6 +461,25 @@
         },
         "data": {
             "title": "資料管理"
+        },
+        "impersonate": {
+            "title": "客戶端模擬",
+            "description": "模擬官方 CLI 客戶端的請求頭，提高相容性",
+            "claude": "Claude CLI",
+            "codex": "Codex CLI",
+            "gemini": "Gemini CLI",
+            "version": "版本",
+            "lastUpdated": "最後更新",
+            "neverUpdated": "從未更新",
+            "refreshNow": "立即刷新",
+            "refreshing": "刷新中...",
+            "refreshSuccess": "版本資訊已更新",
+            "refreshFailed": "刷新失敗",
+            "fetchInterval": "自動刷新間隔",
+            "hours": "小時",
+            "autoFetch": "自動獲取",
+            "customOverride": "自訂覆蓋",
+            "customPlaceholder": "留空使用自動獲取的版本"
         }
     },
     "group": {

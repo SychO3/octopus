@@ -40,6 +40,11 @@ const (
 	SettingKeyOutlierReapMinutes               SettingKey = "outlier_reap_minutes"                 // POR 窗口内存回收 TTL(分钟)
 	SettingKeyOutlierCFRecoverMinutes          SettingKey = "outlier_cf_recover_minutes"           // POR CF 退役渠道恢复探活冷却(分钟)
 	SettingKeyApiBaseUrl                       SettingKey = "api_base_url"                         // 对外服务基础地址，用于一键导出客户端配置，为空时不显示导出入口
+	SettingKeyCLIVersionsClaude                SettingKey = "cli_versions_claude"                   // Claude CLI 模拟版本号
+	SettingKeyCLIVersionsCodex                 SettingKey = "cli_versions_codex"                    // Codex CLI 模拟版本号
+	SettingKeyCLIVersionsGemini                SettingKey = "cli_versions_gemini"                   // Gemini CLI 模拟版本号
+	SettingKeyCLIVersionsUpdatedAt             SettingKey = "cli_versions_updated_at"               // CLI 版本最后更新时间
+	SettingKeyCLIVersionsFetchInterval         SettingKey = "cli_versions_fetch_interval"           // CLI 版本拉取间隔(小时)
 )
 
 type Setting struct {
@@ -80,6 +85,11 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyOutlierReapMinutes, Value: "30"},      // 窗口 30 分钟无流量回收
 		{Key: SettingKeyOutlierCFRecoverMinutes, Value: "30"}, // CF 退役渠道 30 分钟后才探活恢复
 		{Key: SettingKeyApiBaseUrl, Value: ""},                // 默认为空，不显示客户端导出入口
+		{Key: SettingKeyCLIVersionsClaude, Value: "2.1.183"},
+		{Key: SettingKeyCLIVersionsCodex, Value: "0.141.0"},
+		{Key: SettingKeyCLIVersionsGemini, Value: "0.31.0"},
+		{Key: SettingKeyCLIVersionsUpdatedAt, Value: ""},
+		{Key: SettingKeyCLIVersionsFetchInterval, Value: "6"},
 	}
 }
 

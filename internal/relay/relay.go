@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
+	"github.com/bestruirui/octopus/internal/impersonate"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/outlierwindow"
@@ -754,8 +755,15 @@ func (ra *relayAttempt) forwardViaHTTP(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	// 复制请求头
+	// 复制请求头 + 客户端模拟
 	ra.copyHeaders(outboundRequest)
+	impersonate.ApplyClientHeaders(outboundRequest, ra.channel, ra.internalRequest.Model)
+	// CustomHeader 优先级最高，在模拟之后再覆盖
+	if len(ra.channel.CustomHeader) > 0 {
+		for _, header := range ra.channel.CustomHeader {
+			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
+		}
+	}
 	if ra.channel.Type == outbound.OutboundTypeOpenAIResponse {
 		outboundRequest.Header.Set("Content-Type", "application/json")
 	}
@@ -866,11 +874,6 @@ func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
 	}
 	if outboundRequest.Header.Get("User-Agent") == "" {
 		outboundRequest.Header.Set("User-Agent", "")
-	}
-	if len(ra.channel.CustomHeader) > 0 {
-		for _, header := range ra.channel.CustomHeader {
-			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
-		}
 	}
 }
 

@@ -41,6 +41,11 @@ export const SettingKey = {
     OutlierReapMinutes: 'outlier_reap_minutes',
     OutlierCFRecoverMinutes: 'outlier_cf_recover_minutes',
     ApiBaseUrl: 'api_base_url',
+    CLIVersionsClaude: 'cli_versions_claude',
+    CLIVersionsCodex: 'cli_versions_codex',
+    CLIVersionsGemini: 'cli_versions_gemini',
+    CLIVersionsUpdatedAt: 'cli_versions_updated_at',
+    CLIVersionsFetchInterval: 'cli_versions_fetch_interval',
 } as const;
 
 /**
