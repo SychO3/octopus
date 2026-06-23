@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/utils/log"
@@ -110,6 +111,16 @@ func CheckinAccount(ctx context.Context, accountID int) (*model.SiteCheckinResul
 	if err := updateAccountCheckinState(ctx, account, result.Status, result.Message, result.Status == model.SiteExecutionStatusSuccess, resolvedAccessToken); err != nil {
 		return nil, sanitizeSiteError(err)
 	}
+
+	// 签到成功后立即刷新今日收入
+	if result.Status == model.SiteExecutionStatusSuccess {
+		effectiveToken := resolvedAccessToken
+		if effectiveToken == "" {
+			effectiveToken = account.AccessToken
+		}
+		refreshTodayIncomeAfterCheckin(ctx, siteRecord, account, effectiveToken)
+	}
+
 	return result, nil
 }
 
@@ -365,4 +376,20 @@ func DeleteSiteAccount(ctx context.Context, accountID int) error {
 		return err
 	}
 	return op.SiteAccountDel(accountID, ctx)
+}
+
+// refreshTodayIncomeAfterCheckin 签到成功后刷新余额和今日收入
+func refreshTodayIncomeAfterCheckin(ctx context.Context, siteRecord *model.Site, account *model.SiteAccount, accessToken string) {
+	userID := firstManagedPlatformUserID(account)
+	balance, balanceUsed, todayIncome := fetchSiteAccountBalance(ctx, siteRecord, account, accessToken, userID)
+
+	updatePayload := map[string]any{
+		"today_income": todayIncome,
+	}
+	if balance > 0 || balanceUsed > 0 {
+		updatePayload["balance"] = balance
+		updatePayload["balance_used"] = balanceUsed
+	}
+
+	db.GetDB().Model(&model.SiteAccount{}).Where("id = ?", account.ID).Updates(updatePayload)
 }
