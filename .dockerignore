@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+.gitattributes
+.github
+
+# Build outputs
+build/
+web/out/
+web/.next/
+dist/
+*.log
+
+# Dependencies
+node_modules/
+web/node_modules/
+
+# Data and config
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+!CLAUDE.md
+LICENSE
+CONTRIBUTING.md
+
+# CI/CD
+.workflow/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
