@@ -1749,6 +1749,10 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 		}
 	})
 	var rawStream bytes.Buffer
+	var openAIStream model.OutboundStreamEventTransformer
+	var openAIProtocol string
+	var openAIStreamBuffer []byte
+	inboundStream, _ := ra.inAdapter.(model.InboundStreamEventTransformer)
 
 	finishStream := func(c context.Context) error {
 		if !ra.streamPayloadWritten.Load() {
@@ -1845,11 +1849,21 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 			if len(r.chunk) == 0 {
 				continue
 			}
-			if _, werr := writer.Write(r.chunk); werr != nil {
+			chunk := r.chunk
+			if converted, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, r.chunk, openAIProtocol, &openAIStream, inboundStream, &openAIStreamBuffer); err != nil {
+				return err
+			} else if protocol != "" {
+				openAIProtocol = protocol
+				chunk = converted
+			}
+			if len(chunk) == 0 {
+				continue
+			}
+			_, _ = rawStream.Write(chunk)
+			if _, werr := writer.Write(chunk); werr != nil {
 				return werr
 			}
 			ra.streamPayloadWritten.Store(true)
-			_, _ = rawStream.Write(r.chunk)
 			writer.Flush()
 
 			if firstToken {
@@ -1908,6 +1922,11 @@ func (ra *relayAttempt) handleResponsePassthroughAnthropic(ctx context.Context, 
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
 	}
+	if converted, ok, err := convertOpenAIResponseToAnthropic(ctx, body, response); err != nil {
+		return err
+	} else if ok {
+		body = converted
+	}
 
 	contentType := response.Header.Get("Content-Type")
 	if contentType == "" {
@@ -1925,6 +1944,158 @@ func (ra *relayAttempt) handleResponsePassthroughAnthropic(ctx context.Context, 
 	if internalResponse, terr := ra.outAdapter.TransformResponse(ctx, sidecarResp); terr == nil && internalResponse != nil {
 		_, _ = ra.inAdapter.TransformResponse(ctx, internalResponse)
 		ra.collectResponse()
+	}
+	return nil
+}
+
+func convertOpenAIResponseToAnthropic(ctx context.Context, body []byte, response *http.Response) ([]byte, bool, error) {
+	var envelope struct {
+		Object  string          `json:"object"`
+		Choices json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, false, nil
+	}
+	var outAdapter model.Outbound
+	switch {
+	case len(envelope.Choices) > 0 || strings.Contains(envelope.Object, "chat.completion"):
+		outAdapter = &openaiOutbound.ChatOutbound{}
+	case envelope.Object == "response":
+		outAdapter = &openaiOutbound.ResponseOutbound{}
+	default:
+		return nil, false, nil
+	}
+	sidecar := &http.Response{
+		StatusCode: response.StatusCode,
+		Header:     response.Header.Clone(),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	internalResponse, err := outAdapter.TransformResponse(ctx, sidecar)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to convert OpenAI response from Anthropic channel: %w", err)
+	}
+	converted, err := inbound.Get(inbound.InboundTypeAnthropic).TransformResponse(ctx, internalResponse)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to render converted Anthropic response: %w", err)
+	}
+	return converted, true, nil
+}
+
+func convertOpenAIStreamChunkToAnthropic(
+	ctx context.Context,
+	chunk []byte,
+	currentProtocol string,
+	outAdapter *model.OutboundStreamEventTransformer,
+	inAdapter model.InboundStreamEventTransformer,
+	pending *[]byte,
+) ([]byte, string, error) {
+	if len(chunk) == 0 || inAdapter == nil {
+		return nil, currentProtocol, nil
+	}
+	*pending = append(*pending, chunk...)
+	frames := popCompleteSSEFrames(pending)
+	if len(frames) == 0 {
+		return nil, currentProtocol, nil
+	}
+
+	protocol := currentProtocol
+	var out bytes.Buffer
+	for _, frame := range frames {
+		if protocol == "" {
+			protocol = detectOpenAIStreamProtocol(frame)
+		}
+		switch protocol {
+		case "openai_chat":
+			if *outAdapter == nil {
+				*outAdapter = &openaiOutbound.ChatOutbound{}
+			}
+		case "openai_responses":
+			if *outAdapter == nil {
+				*outAdapter = &openaiOutbound.ResponseOutbound{}
+			}
+		default:
+			out.Write(frame)
+			continue
+		}
+
+		events, err := convertOpenAIStreamFrame(ctx, frame, *outAdapter)
+		if err != nil {
+			return nil, protocol, err
+		}
+		if len(events) == 0 {
+			continue
+		}
+		converted, err := inAdapter.TransformStreamEvents(ctx, events)
+		if err != nil {
+			return nil, protocol, err
+		}
+		out.Write(converted)
+	}
+	return out.Bytes(), protocol, nil
+}
+
+func popCompleteSSEFrames(pending *[]byte) [][]byte {
+	var frames [][]byte
+	for {
+		data := *pending
+		idx, sepLen := completeSSEFrameIndex(data)
+		if idx < 0 {
+			return frames
+		}
+		end := idx + sepLen
+		frame := append([]byte(nil), data[:end]...)
+		frames = append(frames, frame)
+		*pending = append([]byte(nil), data[end:]...)
+	}
+}
+
+func completeSSEFrameIndex(data []byte) (int, int) {
+	if idx := bytes.Index(data, []byte("\n\n")); idx >= 0 {
+		return idx, 2
+	}
+	if idx := bytes.Index(data, []byte("\r\n\r\n")); idx >= 0 {
+		return idx, 4
+	}
+	return -1, 0
+}
+
+func detectOpenAIStreamProtocol(frame []byte) string {
+	data := firstSSEData(frame)
+	if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+		return ""
+	}
+	var envelope struct {
+		Object  string          `json:"object"`
+		Choices json.RawMessage `json:"choices"`
+		Type    string          `json:"type"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return ""
+	}
+	if len(envelope.Choices) > 0 || strings.Contains(envelope.Object, "chat.completion") {
+		return "openai_chat"
+	}
+	if strings.HasPrefix(envelope.Type, "response.") || envelope.Type == "error" {
+		return "openai_responses"
+	}
+	return ""
+}
+
+func convertOpenAIStreamFrame(ctx context.Context, frame []byte, outAdapter model.OutboundStreamEventTransformer) ([]model.StreamEvent, error) {
+	data := firstSSEData(frame)
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return outAdapter.TransformStreamEvent(ctx, data)
+}
+
+func firstSSEData(frame []byte) []byte {
+	readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
+	for ev, err := range sse.Read(bytes.NewReader(frame), readCfg) {
+		if err != nil {
+			return nil
+		}
+		return []byte(ev.Data)
 	}
 	return nil
 }
