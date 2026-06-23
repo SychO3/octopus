@@ -89,6 +89,149 @@ func TestHandleStreamResponsePassthroughAnthropicPreservesRawSSE(t *testing.T) {
 	}
 }
 
+func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rawSSE := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"hello"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	internalReq := &transformerModel.InternalLLMRequest{
+		Model:        "claude-opus-4-6",
+		Stream:       boolPtr(true),
+		RawAPIFormat: transformerModel.APIFormatAnthropicMessage,
+	}
+	req := &relayRequest{
+		c:               c,
+		inAdapter:       inbound.Get(inbound.InboundTypeAnthropic),
+		internalRequest: internalReq,
+		metrics:         NewRelayMetrics(1, internalReq.Model, nil, internalReq),
+		apiKeyID:        1,
+		requestModel:    internalReq.Model,
+	}
+	ra := &relayAttempt{
+		relayRequest: req,
+		outAdapter:   outbound.Get(outbound.OutboundTypeAnthropic),
+	}
+
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+		},
+		Body: io.NopCloser(bytes.NewReader([]byte(rawSSE))),
+	}
+
+	if err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response); err != nil {
+		t.Fatalf("handleStreamResponsePassthroughAnthropic() error = %v", err)
+	}
+	got := recorder.Body.String()
+	if strings.Contains(got, "chat.completion.chunk") {
+		t.Fatalf("expected OpenAI chat stream to be converted, got %q", got)
+	}
+	if !strings.Contains(got, "event:message_start") || !strings.Contains(got, "event:content_block_delta") || !strings.Contains(got, `"text":"hello"`) {
+		t.Fatalf("expected Anthropic SSE with text delta, got %q", got)
+	}
+}
+
+func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIResponsesSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rawSSE := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","model":"claude-opus-4.6","created_at":1,"output":[],"status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"claude-opus-4.6","created_at":1,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`,
+		"",
+	}, "\n")
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	internalReq := &transformerModel.InternalLLMRequest{
+		Model:        "claude-opus-4-6",
+		Stream:       boolPtr(true),
+		RawAPIFormat: transformerModel.APIFormatAnthropicMessage,
+	}
+	req := &relayRequest{
+		c:               c,
+		inAdapter:       inbound.Get(inbound.InboundTypeAnthropic),
+		internalRequest: internalReq,
+		metrics:         NewRelayMetrics(1, internalReq.Model, nil, internalReq),
+		apiKeyID:        1,
+		requestModel:    internalReq.Model,
+	}
+	ra := &relayAttempt{
+		relayRequest: req,
+		outAdapter:   outbound.Get(outbound.OutboundTypeAnthropic),
+	}
+
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+		},
+		Body: io.NopCloser(bytes.NewReader([]byte(rawSSE))),
+	}
+
+	if err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response); err != nil {
+		t.Fatalf("handleStreamResponsePassthroughAnthropic() error = %v", err)
+	}
+	got := recorder.Body.String()
+	if strings.Contains(got, "response.output_text.delta") {
+		t.Fatalf("expected OpenAI responses stream to be converted, got %q", got)
+	}
+	if !strings.Contains(got, "event:message_start") || !strings.Contains(got, "event:content_block_delta") || !strings.Contains(got, `"text":"hello"`) {
+		t.Fatalf("expected Anthropic SSE with text delta, got %q", got)
+	}
+}
+
+func TestConvertOpenAIStreamChunkToAnthropicBuffersPartialFrame(t *testing.T) {
+	ctx := context.Background()
+	inboundStream, ok := inbound.Get(inbound.InboundTypeAnthropic).(transformerModel.InboundStreamEventTransformer)
+	if !ok {
+		t.Fatalf("expected Anthropic inbound to support stream events")
+	}
+	var outboundStream transformerModel.OutboundStreamEventTransformer
+	var pending []byte
+
+	first := []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,`)
+	out, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, first, "", &outboundStream, inboundStream, &pending)
+	if err != nil {
+		t.Fatalf("first partial chunk returned error: %v", err)
+	}
+	if len(out) != 0 || protocol != "" {
+		t.Fatalf("expected partial frame to be buffered without output, got protocol=%q out=%q", protocol, string(out))
+	}
+
+	second := []byte(`"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n")
+	out, protocol, err = convertOpenAIStreamChunkToAnthropic(ctx, second, protocol, &outboundStream, inboundStream, &pending)
+	if err != nil {
+		t.Fatalf("second chunk returned error: %v", err)
+	}
+	got := string(out)
+	if protocol != "openai_chat" {
+		t.Fatalf("expected protocol openai_chat, got %q", protocol)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected pending buffer to be drained, got %q", string(pending))
+	}
+	if strings.Contains(got, "chat.completion.chunk") || !strings.Contains(got, "event:content_block_delta") || !strings.Contains(got, `"text":"hello"`) {
+		t.Fatalf("expected converted Anthropic text delta, got %q", got)
+	}
+}
+
 func TestHandleStreamResponsePassthroughOpenAIResponsesPreservesRawSSE(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -468,6 +611,150 @@ func TestHandlerPassthroughsOpenAIResponsesSameProtocolNonStream(t *testing.T) {
 	}
 	if got := recorder.Body.String(); got != rawResponse {
 		t.Fatalf("expected raw JSON to be preserved exactly, got %q want %q", got, rawResponse)
+	}
+}
+
+func TestHandlerConvertsOpenAIChatResponseFromAnthropicPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayTestDB(t)
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"bad_1","object":"chat.completion","model":"claude-opus-4.6","choices":[{"index":0,"message":{"role":"assistant","content":"converted text"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
+	}))
+	defer server.Close()
+
+	channel := &model.Channel{
+		Name:     "relay-anthropic-openai-chat-convert",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		BaseUrls: []model.BaseUrl{{URL: server.URL + "/v1"}},
+		Model:    "claude-opus-4-6",
+		Keys:     []model.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}
+	if err := op.ChannelCreate(channel, ctx); err != nil {
+		t.Fatalf("ChannelCreate failed: %v", err)
+	}
+
+	group := &model.Group{Name: "relay-anthropic-openai-chat-convert-group", Mode: model.GroupModeFailover}
+	if err := op.GroupCreate(group, ctx); err != nil {
+		t.Fatalf("GroupCreate failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&model.GroupItem{GroupID: group.ID, ChannelID: channel.ID, ModelName: "claude-opus-4-6", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"relay-anthropic-openai-chat-convert-group","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected relay handler to succeed with converted response, got status %d body %s", recorder.Code, recorder.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("expected channel to be attempted once, got %d", hits.Load())
+	}
+	var got struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Usage struct {
+			InputTokens          int64 `json:"input_tokens"`
+			OutputTokens         int64 `json:"output_tokens"`
+			CacheReadInputTokens int64 `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("expected valid Anthropic response JSON, got %v body %s", err, recorder.Body.String())
+	}
+	if got.Type != "message" || got.Role != "assistant" {
+		t.Fatalf("expected Anthropic message envelope, got %#v", got)
+	}
+	if len(got.Content) != 1 || got.Content[0].Type != "text" || got.Content[0].Text != "converted text" {
+		t.Fatalf("expected converted text content, got %#v", got.Content)
+	}
+	if got.Usage.InputTokens != 3 || got.Usage.OutputTokens != 2 {
+		t.Fatalf("expected converted usage input=3 output=2, got %+v", got.Usage)
+	}
+}
+
+func TestHandlerConvertsOpenAIResponsesResponseFromAnthropicPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayTestDB(t)
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"model":"claude-opus-4.6","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"responses text"}]}],"status":"completed","usage":{"input_tokens":4,"input_tokens_details":{"cached_tokens":1},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":7}}`))
+	}))
+	defer server.Close()
+
+	channel := &model.Channel{
+		Name:     "relay-anthropic-openai-responses-convert",
+		Type:     outbound.OutboundTypeAnthropic,
+		Enabled:  true,
+		BaseUrls: []model.BaseUrl{{URL: server.URL + "/v1"}},
+		Model:    "claude-opus-4-6",
+		Keys:     []model.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}
+	if err := op.ChannelCreate(channel, ctx); err != nil {
+		t.Fatalf("ChannelCreate failed: %v", err)
+	}
+
+	group := &model.Group{Name: "relay-anthropic-openai-responses-convert-group", Mode: model.GroupModeFailover}
+	if err := op.GroupCreate(group, ctx); err != nil {
+		t.Fatalf("GroupCreate failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&model.GroupItem{GroupID: group.ID, ChannelID: channel.ID, ModelName: "claude-opus-4-6", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"relay-anthropic-openai-responses-convert-group","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected relay handler to succeed with converted response, got status %d body %s", recorder.Code, recorder.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("expected channel to be attempted once, got %d", hits.Load())
+	}
+	var got struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Usage struct {
+			InputTokens          int64 `json:"input_tokens"`
+			OutputTokens         int64 `json:"output_tokens"`
+			CacheReadInputTokens int64 `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("expected valid Anthropic response JSON, got %v body %s", err, recorder.Body.String())
+	}
+	if got.Type != "message" || got.Role != "assistant" {
+		t.Fatalf("expected Anthropic message envelope, got %#v", got)
+	}
+	if len(got.Content) != 1 || got.Content[0].Type != "text" || got.Content[0].Text != "responses text" {
+		t.Fatalf("expected converted responses text content, got %#v", got.Content)
+	}
+	if got.Usage.InputTokens != 3 || got.Usage.OutputTokens != 3 || got.Usage.CacheReadInputTokens != 1 {
+		t.Fatalf("expected converted usage input=3 cache_read=1 output=3, got %+v", got.Usage)
 	}
 }
 
