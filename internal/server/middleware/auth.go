@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/apperror"
-	"github.com/bestruirui/octopus/internal/conf"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/server/auth"
 	"github.com/bestruirui/octopus/internal/server/resp"
@@ -50,7 +49,7 @@ func APIKeyAuth() gin.HandlerFunc {
 			return
 		}
 
-		if !strings.HasPrefix(apiKey, "sk-"+conf.APP_NAME+"-") {
+		if !strings.HasPrefix(apiKey, "sk-") {
 			resp.InvalidToken(c)
 			c.Abort()
 			return
