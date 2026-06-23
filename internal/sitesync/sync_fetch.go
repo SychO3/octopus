@@ -36,11 +36,65 @@ func fetchManagementTokens(ctx context.Context, siteRecord *model.Site, account 
 		if tokenValue == "" {
 			continue
 		}
+		// 对 masked key 尝试调 POST /api/token/{id}/key 获取完整值
+		if model.IsMaskedSiteTokenValue(tokenValue) {
+			if revealed := revealMaskedTokenKey(ctx, siteRecord, account, accessToken, item); revealed != "" {
+				tokenValue = revealed
+			}
+		}
 		groupKey := model.NormalizeSiteGroupKey(firstNonEmptyString(jsonString(item["group"]), jsonString(item["token_group"]), jsonString(item["group_name"])))
 		groupName := model.NormalizeSiteGroupName(groupKey, firstNonEmptyString(jsonString(item["group_name"]), jsonString(item["group"]), jsonString(item["token_group"])))
 		tokens = append(tokens, model.SiteToken{Name: firstNonEmptyString(strings.TrimSpace(jsonString(item["name"])), fmt.Sprintf("token-%d", index+1)), Token: tokenValue, GroupKey: groupKey, GroupName: groupName, Enabled: parseEnabledFlag(item["status"]), Source: "sync", IsDefault: index == 0})
 	}
 	return tokens, nil
+}
+
+// revealMaskedTokenKey calls POST /api/token/{id}/key to retrieve the full unmasked key value.
+func revealMaskedTokenKey(ctx context.Context, siteRecord *model.Site, account *model.SiteAccount, accessToken string, item map[string]any) string {
+	tokenID := extractTokenID(item)
+	if tokenID == "" {
+		return ""
+	}
+	requestURL := buildSiteURL(siteRecord.BaseURL, fmt.Sprintf("/api/token/%s/key", tokenID))
+	payload, err := requestJSONWithManagedAccessToken(ctx, siteRecord, "POST", requestURL, nil, accessToken, account)
+	if err != nil || payload == nil {
+		return ""
+	}
+	// Response: {"success": true, "data": {"key": "sk-full-key-value"}}
+	data, ok := payload["data"].(map[string]any)
+	if !ok {
+		// 有些实现直接返回 {"key": "..."}
+		data = payload
+	}
+	fullKey := strings.TrimSpace(jsonString(data["key"]))
+	if fullKey == "" || model.IsMaskedSiteTokenValue(fullKey) {
+		return ""
+	}
+	return fullKey
+}
+
+func extractTokenID(item map[string]any) string {
+	for _, key := range []string{"id", "Id", "ID", "token_id", "tokenId"} {
+		v := item[key]
+		if v == nil {
+			continue
+		}
+		switch val := v.(type) {
+		case float64:
+			if val > 0 {
+				return fmt.Sprintf("%d", int(val))
+			}
+		case int:
+			if val > 0 {
+				return fmt.Sprintf("%d", val)
+			}
+		case string:
+			if strings.TrimSpace(val) != "" {
+				return strings.TrimSpace(val)
+			}
+		}
+	}
+	return ""
 }
 
 func fetchManagementGroups(ctx context.Context, siteRecord *model.Site, account *model.SiteAccount, accessToken string) ([]model.SiteUserGroup, error) {
