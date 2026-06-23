@@ -291,9 +291,11 @@ func syncWithDirectToken(ctx context.Context, siteRecord *model.Site, account *m
 		Message:       baseGroupResult.Message,
 	}})
 	status := buildSyncSnapshotStatus(groupResults)
+	groups := []model.SiteUserGroup{{GroupKey: model.SiteDefaultGroupKey, Name: model.SiteDefaultGroupName}}
+	populateGroupRatiosFromPricing(ctx, siteRecord, account, token, firstManagedPlatformUserID(account), groups)
 	snapshot := &syncSnapshot{
 		accessToken:  strings.TrimSpace(account.AccessToken),
-		groups:       []model.SiteUserGroup{{GroupKey: model.SiteDefaultGroupKey, Name: model.SiteDefaultGroupName}},
+		groups:       groups,
 		tokens:       []model.SiteToken{groupToken},
 		models:       siteModels,
 		groupResults: groupResults,
