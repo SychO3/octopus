@@ -6,6 +6,7 @@ import (
 	"github.com/bestruirui/octopus/internal/relay"
 	"github.com/bestruirui/octopus/internal/server/middleware"
 	"github.com/bestruirui/octopus/internal/server/router"
+	"github.com/bestruirui/octopus/internal/tokencount"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/gin-gonic/gin"
 )
@@ -29,6 +30,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/messages", http.MethodPost).
 				Handle(message),
+		).
+		AddRoute(
+			router.NewRoute("/messages/count_tokens", http.MethodPost).
+				Handle(countTokensHandler),
 		).
 		AddRoute(
 			router.NewRoute("/embeddings", http.MethodPost).
@@ -61,4 +66,19 @@ func embedding(c *gin.Context) {
 }
 func wsResponse(c *gin.Context) {
 	relay.HandleWSResponse(c)
+}
+
+func countTokensHandler(c *gin.Context) {
+	var req struct {
+		Model    string      `json:"model"`
+		System   interface{} `json:"system"`
+		Messages interface{} `json:"messages"`
+		Tools    interface{} `json:"tools"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": gin.H{"message": "invalid request body", "type": "invalid_request_error"}})
+		return
+	}
+	count := tokencount.CountAll(req.System, req.Messages, req.Tools)
+	c.JSON(200, gin.H{"input_tokens": count})
 }
