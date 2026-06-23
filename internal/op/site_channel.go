@@ -368,6 +368,7 @@ func newSiteChannelGroupView(groupKey string, groupName string, group model.Site
 	return &model.SiteChannelGroup{
 		GroupKey:                groupKey,
 		GroupName:               groupName,
+		GroupRatio:              group.GroupRatio,
 		ProjectionDisabled:      group.ProjectionDisabled,
 		ProjectionSuspended:     group.ProjectionSuspended,
 		ProjectionSuspendReason: group.ProjectionSuspendReason,

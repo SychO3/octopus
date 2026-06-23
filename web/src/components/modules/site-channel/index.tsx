@@ -1958,6 +1958,7 @@ function SiteAccountPanel({
                                                 <div className="truncate">{group.group_name || group.group_key}</div>
                                                 <div className="text-[11px] text-muted-foreground">
                                                     {group.models.length} 模型 · Key {group.enabled_key_count}/{group.key_count}
+                                                    {group.group_ratio ? ` · ×${group.group_ratio}` : ''}
                                                     {group.projection_disabled ? ' · 不投影' : ''}
                                                     {group.projection_suspended ? ' · 已暂停' : STALE_MODEL_SYNC_STATUSES.includes(group.model_sync_status) ? ' · 沿用历史' : ''}
                                                     {group.masked_pending_key_count > 0 ? ` · 待补全 ${group.masked_pending_key_count}` : ''}

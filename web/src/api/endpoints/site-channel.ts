@@ -77,6 +77,7 @@ export type SiteProjectedChannelSettings = {
 export type SiteChannelGroup = {
     group_key: string;
     group_name: string;
+    group_ratio: number;
     projection_disabled: boolean;
     projection_suspended: boolean;
     projection_suspend_reason?: string;
