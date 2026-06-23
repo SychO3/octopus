@@ -2161,6 +2161,7 @@ function SiteAccountPanel({
                                                     disabled={createKeyMutation.isPending}
                                                 >
                                                     {group.group_name || group.group_key}
+                                                    {group.group_ratio ? ` ×${group.group_ratio}` : ''}
                                                     <span className="text-[10px] text-amber-700/80 dark:text-amber-200/80">
                                                         {createKeyMutation.isPending && creatingGroup?.group_key === group.group_key ? '创建中...' : '快捷创建'}
                                                     </span>
