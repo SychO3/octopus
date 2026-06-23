@@ -500,6 +500,12 @@ func ChannelLLMList(ctx context.Context) ([]model.LLMChannel, error) {
 		siteGroupKey := ""
 		siteGroupName := ""
 		endpointType := "openai"
+		switch channel.Type {
+		case model2.OutboundTypeAnthropic:
+			endpointType = "anthropic"
+		case model2.OutboundTypeGemini:
+			endpointType = "gemini"
+		}
 		var siteID *int
 		var siteAccountID *int
 		if binding != nil {
@@ -532,14 +538,6 @@ func ChannelLLMList(ctx context.Context) ([]model.LLMChannel, error) {
 			}
 			if siteGroupName == "" {
 				siteGroupName = model.NormalizeSiteGroupName(siteGroupKey, "")
-			}
-			switch channel.Type {
-			case model2.OutboundTypeAnthropic:
-				endpointType = "anthropic"
-			case model2.OutboundTypeGemini:
-				endpointType = "gemini"
-			default:
-				endpointType = "openai"
 			}
 		}
 		modelNames := xstrings.SplitTrimCompact(",", channel.Model, channel.CustomModel)
