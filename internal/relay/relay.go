@@ -1262,7 +1262,19 @@ func (ra *relayAttempt) forwardViaHTTPPassthroughOpenAIResponses(ctx context.Con
 	if err := ra.applyParamOverride(outboundRequest); err != nil {
 		return 0, err
 	}
+	// 剥离下游客户端带的 beta query param
+	if q := outboundRequest.URL.Query(); q.Has("beta") {
+		q.Del("beta")
+		outboundRequest.URL.RawQuery = q.Encode()
+	}
 	ra.copyHeaders(outboundRequest)
+	impersonate.ApplyClientHeaders(outboundRequest, ra.channel, ra.internalRequest.Model)
+	// CustomHeader 优先级最高
+	if len(ra.channel.CustomHeader) > 0 {
+		for _, header := range ra.channel.CustomHeader {
+			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
+		}
+	}
 	outboundRequest.Header.Set("Content-Type", "application/json")
 
 	response, err := ra.sendRequest(outboundRequest)
@@ -1581,10 +1593,24 @@ func (ra *relayAttempt) forwardViaHTTPPassthroughAnthropic(ctx context.Context) 
 		return 0, err
 	}
 
+	// 剥离下游客户端带的 beta query param，上游不认识
+	if q := outboundRequest.URL.Query(); q.Has("beta") {
+		q.Del("beta")
+		outboundRequest.URL.RawQuery = q.Encode()
+	}
+
 	// 复制客户端请求头（hop-by-hop 过滤保证 x-api-key/authorization/host/content-length
 	// /accept-encoding 不会覆盖出站设置的关键头；anthropic-beta / anthropic-version /
 	// user-agent / x-stainless-* 等原样透传）
 	ra.copyHeaders(outboundRequest)
+	impersonate.ApplyClientHeaders(outboundRequest, ra.channel, ra.internalRequest.Model)
+	log.Infof("🔍 [DEBUG] Channel=%s URL=%s User-Agent=%s", ra.channel.Name, outboundRequest.URL.String(), outboundRequest.Header.Get("User-Agent"))
+	// CustomHeader 优先级最高，在模拟之后再覆盖
+	if len(ra.channel.CustomHeader) > 0 {
+		for _, header := range ra.channel.CustomHeader {
+			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
+		}
+	}
 
 	// 发送请求
 	response, err := ra.sendRequest(outboundRequest)
@@ -1632,7 +1658,19 @@ func (ra *relayAttempt) forwardViaHTTPStandard(ctx context.Context) (int, error)
 	if err := ra.applyParamOverride(outboundRequest); err != nil {
 		return 0, err
 	}
+	// 剥离下游客户端带的 beta query param
+	if q := outboundRequest.URL.Query(); q.Has("beta") {
+		q.Del("beta")
+		outboundRequest.URL.RawQuery = q.Encode()
+	}
 	ra.copyHeaders(outboundRequest)
+	impersonate.ApplyClientHeaders(outboundRequest, ra.channel, ra.internalRequest.Model)
+	// CustomHeader 优先级最高
+	if len(ra.channel.CustomHeader) > 0 {
+		for _, header := range ra.channel.CustomHeader {
+			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
+		}
+	}
 
 	response, err := ra.sendRequest(outboundRequest)
 	if err != nil {
