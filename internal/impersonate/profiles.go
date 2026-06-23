@@ -24,7 +24,6 @@ func BuildClaudeProfile(version, modelName string) HeaderProfile {
 			"X-Stainless-Timeout":                        "600",
 			"Anthropic-Dangerous-Direct-Browser-Access":  "true",
 			"Connection":                                 "keep-alive",
-			"Accept-Encoding":                            "gzip, deflate, br, zstd",
 		},
 	}
 }
