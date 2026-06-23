@@ -71,6 +71,27 @@ function TaskRow({ icon: Icon, label, settingKey, last, running, runLabel, pendi
     );
 }
 
+function GroupRatioLimitRow() {
+    const field = useSettingField(SettingKey.GroupRatioLimit);
+    return (
+        <div className="flex items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-3">
+                <Globe2 className="h-5 w-5 shrink-0 text-muted-foreground" />
+                <span className="text-sm font-medium">分组倍率上限</span>
+            </div>
+            <Input
+                type="number"
+                min="0"
+                value={field.value}
+                onChange={(e) => field.setValue(e.target.value)}
+                onBlur={field.save}
+                placeholder="0 = 不限制"
+                className="w-28 rounded-xl"
+            />
+        </div>
+    );
+}
+
 export function SettingSyncTasks() {
     const t = useTranslations('setting');
     const tAll = useTranslations();
@@ -154,6 +175,9 @@ export function SettingSyncTasks() {
                     onError: (error) => toast.error(translateSiteMessage(locale, getErrorMessage(error, t('syncTasks.siteCheckin.failed')), tAll)),
                 })}
             />
+
+            {/* 分组倍率上限 */}
+            <GroupRatioLimitRow />
         </SettingCard>
     );
 }
