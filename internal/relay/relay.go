@@ -755,6 +755,12 @@ func (ra *relayAttempt) forwardViaHTTP(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
+	// 剥离下游客户端带的 beta query param，上游不认识
+	if q := outboundRequest.URL.Query(); q.Has("beta") {
+		q.Del("beta")
+		outboundRequest.URL.RawQuery = q.Encode()
+	}
+
 	// 复制请求头 + 客户端模拟
 	ra.copyHeaders(outboundRequest)
 	impersonate.ApplyClientHeaders(outboundRequest, ra.channel, ra.internalRequest.Model)
