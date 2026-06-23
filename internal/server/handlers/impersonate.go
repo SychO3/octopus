@@ -22,15 +22,21 @@ func init() {
 }
 
 func getImpersonateVersions(c *gin.Context) {
-	claudeVer, _ := op.SettingGetString(model.SettingKeyCLIVersionsClaude)
-	codexVer, _ := op.SettingGetString(model.SettingKeyCLIVersionsCodex)
-	geminiVer, _ := op.SettingGetString(model.SettingKeyCLIVersionsGemini)
+	claudeCustom, _ := op.SettingGetString(model.SettingKeyCLIVersionsClaude)
+	codexCustom, _ := op.SettingGetString(model.SettingKeyCLIVersionsCodex)
+	geminiCustom, _ := op.SettingGetString(model.SettingKeyCLIVersionsGemini)
+	claudeLatest, _ := op.SettingGetString(model.SettingKeyCLIVersionsClaudeLatest)
+	codexLatest, _ := op.SettingGetString(model.SettingKeyCLIVersionsCodexLatest)
+	geminiLatest, _ := op.SettingGetString(model.SettingKeyCLIVersionsGeminiLatest)
 	updatedAt, _ := op.SettingGetString(model.SettingKeyCLIVersionsUpdatedAt)
 
 	resp.Success(c, gin.H{
-		"claude":     claudeVer,
-		"codex":      codexVer,
-		"gemini":     geminiVer,
+		"claude":     claudeLatest,
+		"codex":      codexLatest,
+		"gemini":     geminiLatest,
+		"claude_custom": claudeCustom,
+		"codex_custom":  codexCustom,
+		"gemini_custom": geminiCustom,
 		"updated_at": updatedAt,
 	})
 }
@@ -44,15 +50,15 @@ func refreshImpersonateVersions(c *gin.Context) {
 		return
 	}
 
-	claudeVer, _ := op.SettingGetString(model.SettingKeyCLIVersionsClaude)
-	codexVer, _ := op.SettingGetString(model.SettingKeyCLIVersionsCodex)
-	geminiVer, _ := op.SettingGetString(model.SettingKeyCLIVersionsGemini)
+	claudeLatest, _ := op.SettingGetString(model.SettingKeyCLIVersionsClaudeLatest)
+	codexLatest, _ := op.SettingGetString(model.SettingKeyCLIVersionsCodexLatest)
+	geminiLatest, _ := op.SettingGetString(model.SettingKeyCLIVersionsGeminiLatest)
 	updatedAt, _ := op.SettingGetString(model.SettingKeyCLIVersionsUpdatedAt)
 
 	resp.Success(c, gin.H{
-		"claude":     claudeVer,
-		"codex":      codexVer,
-		"gemini":     geminiVer,
+		"claude":     claudeLatest,
+		"codex":      codexLatest,
+		"gemini":     geminiLatest,
 		"updated_at": updatedAt,
 	})
 }

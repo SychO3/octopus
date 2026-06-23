@@ -99,7 +99,7 @@ func RefreshAllVersions(ctx context.Context) error {
 			continue
 		}
 
-		key := versionSettingKeys[provider]
+		key := versionLatestKeys[provider]
 		if err := op.SettingSetString(key, version); err != nil {
 			log.Warnf("save CLI version failed for %s: %v", provider, err)
 			lastErr = err
