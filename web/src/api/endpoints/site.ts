@@ -48,6 +48,7 @@ export type SiteUserGroup = {
   site_account_id: number;
   group_key: string;
   name: string;
+  group_ratio: number;
   raw_payload?: string | null;
   projection_disabled?: boolean;
   projection_suspended?: boolean;

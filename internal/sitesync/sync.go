@@ -103,6 +103,7 @@ func syncManagementPlatform(ctx context.Context, siteRecord *model.Site, account
 	}
 
 	groups = mergeSiteGroups(groups, tokens)
+	populateGroupRatiosFromPricing(ctx, siteRecord, account, accessToken, firstManagedPlatformUserID(account), groups)
 	groupTokens := pickModelTokensByGroup(tokens)
 	sessionModelsLoaded := false
 	var cachedSessionModels []string

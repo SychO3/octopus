@@ -79,6 +79,7 @@ func syncAnyRouter(ctx context.Context, siteRecord *model.Site, account *model.S
 		groups = nil
 	}
 	groups = mergeSiteGroups(groups, tokens)
+	populateGroupRatiosFromPricing(ctx, siteRecord, account, accessToken, userID, groups)
 
 	siteModels, tokenGroupResults := syncSiteModelsByGroup(
 		ctx,

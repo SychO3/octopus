@@ -297,6 +297,7 @@ type SiteUserGroup struct {
 	SiteAccountID           int                      `json:"site_account_id" gorm:"uniqueIndex:idx_site_account_group;not null"`
 	GroupKey                string                   `json:"group_key" gorm:"size:128;uniqueIndex:idx_site_account_group;not null"`
 	Name                    string                   `json:"name"`
+	GroupRatio              float64                  `json:"group_ratio" gorm:"default:0"`
 	RawPayload              string                   `json:"raw_payload"`
 	ProjectionDisabled      bool                     `json:"projection_disabled" gorm:"default:false"`
 	ProjectionSuspended     bool                     `json:"projection_suspended" gorm:"default:false;index"`

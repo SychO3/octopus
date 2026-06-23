@@ -370,7 +370,16 @@ func parseGroupObject(item map[string]any) (model.SiteUserGroup, bool) {
 	if strings.TrimSpace(groupKey) == "" {
 		return model.SiteUserGroup{}, false
 	}
-	return model.SiteUserGroup{GroupKey: strings.TrimSpace(groupKey), Name: strings.TrimSpace(groupName)}, true
+	group := model.SiteUserGroup{GroupKey: strings.TrimSpace(groupKey), Name: strings.TrimSpace(groupName)}
+	// Sub2API: extract rate_multiplier / group_ratio
+	if ratio := jsonFloat(item["rate_multiplier"]); ratio > 0 {
+		group.GroupRatio = ratio
+	} else if ratio := jsonFloat(item["group_ratio"]); ratio > 0 {
+		group.GroupRatio = ratio
+	} else if ratio := jsonFloat(item["ratio"]); ratio > 0 {
+		group.GroupRatio = ratio
+	}
+	return group, true
 }
 
 func isIgnorableGroupMapKey(key string) bool {
