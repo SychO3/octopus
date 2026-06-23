@@ -224,7 +224,12 @@
                 "label": "Max Cooldown (seconds)",
                 "placeholder": "Enter max cooldown in seconds"
             },
-            "hint": "When a channel fails consecutively up to the threshold, circuit breaker trips. Cooldown grows exponentially up to the max cooldown"
+            "hint": "When a channel fails consecutively up to the threshold, circuit breaker trips. Cooldown grows exponentially up to the max cooldown",
+            "resetLabel": "Reset Circuit Breaker",
+            "resetTooltip": "Manually reset all channel circuit breakers to immediately restore tripped channels",
+            "resetButton": "Reset All",
+            "resetSuccess": "Circuit breakers reset",
+            "resetFailed": "Reset failed"
         },
         "outlierRetirement": {
             "title": "Passive Outlier Retirement",
