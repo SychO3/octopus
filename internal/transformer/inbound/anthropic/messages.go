@@ -165,6 +165,10 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 						continue
 					}
 
+					if block.Signature == nil || strings.TrimSpace(*block.Signature) == "" {
+						continue
+					}
+
 					// Keep thinking content in MultipleContent to preserve order
 					thinkingText := ""
 					if block.Thinking != nil && *block.Thinking != "" {
@@ -861,9 +865,8 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 					Type:  "content_block_start",
 					Index: &i.contentIndex,
 					ContentBlock: &MessageContentBlock{
-						Type:      "thinking",
-						Thinking:  lo.ToPtr(""),
-						Signature: lo.ToPtr(""),
+						Type:     "thinking",
+						Thinking: lo.ToPtr(""),
 					},
 				}
 				data, err := json.Marshal(startEvent)
@@ -897,9 +900,8 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 					Type:  "content_block_start",
 					Index: &i.contentIndex,
 					ContentBlock: &MessageContentBlock{
-						Type:      "thinking",
-						Thinking:  lo.ToPtr(""),
-						Signature: lo.ToPtr(""),
+						Type:     "thinking",
+						Thinking: lo.ToPtr(""),
 					},
 				}
 				data, err := json.Marshal(startEvent)
@@ -1299,7 +1301,7 @@ func (i *MessagesInbound) TransformStreamEvents(ctx context.Context, events []mo
 			return err
 		}
 		i.hasThinkingContentStarted = true
-		startEvent := StreamEvent{Type: "content_block_start", Index: &i.contentIndex, ContentBlock: &MessageContentBlock{Type: "thinking", Thinking: lo.ToPtr(""), Signature: lo.ToPtr("")}}
+		startEvent := StreamEvent{Type: "content_block_start", Index: &i.contentIndex, ContentBlock: &MessageContentBlock{Type: "thinking", Thinking: lo.ToPtr("")}}
 		data, err := json.Marshal(startEvent)
 		if err != nil {
 			return fmt.Errorf("failed to marshal content_block_start event: %w", err)
