@@ -48,6 +48,7 @@ const (
 	SettingKeyCLIVersionsGeminiLatest          SettingKey = "cli_versions_gemini_latest"            // Gemini CLI 自动拉取的最新版本
 	SettingKeyCLIVersionsUpdatedAt             SettingKey = "cli_versions_updated_at"               // CLI 版本最后更新时间
 	SettingKeyCLIVersionsFetchInterval         SettingKey = "cli_versions_fetch_interval"           // CLI 版本拉取间隔(小时)
+	SettingKeyGroupRatioLimit                  SettingKey = "group_ratio_limit"                     // 分组倍率上限，超过此值的分组暂停投影（0=不限制）
 )
 
 type Setting struct {
@@ -96,6 +97,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCLIVersionsGeminiLatest, Value: "0.31.0"},
 		{Key: SettingKeyCLIVersionsUpdatedAt, Value: ""},
 		{Key: SettingKeyCLIVersionsFetchInterval, Value: "6"},
+		{Key: SettingKeyGroupRatioLimit, Value: "0"}, // 0=不限制，>0时超过此倍率的分组暂停投影
 	}
 }
 
@@ -129,6 +131,8 @@ func (s *Setting) Validate() error {
 			return fmt.Errorf("setting value must be non-negative")
 		}
 		return nil
+	case SettingKeyGroupRatioLimit:
+		return validateIntMin(s.Value, 0)
 	case SettingKeyRelayLogKeepEnabled, SettingKeyResponsesWSEnabled, SettingKeyGroupHealthEnabled, SettingKeyStatsSiteModelBackfilled, SettingKeyOutlierRetireEnabled:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("setting value must be true or false")

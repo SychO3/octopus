@@ -46,6 +46,7 @@ export const SettingKey = {
     CLIVersionsGemini: 'cli_versions_gemini',
     CLIVersionsUpdatedAt: 'cli_versions_updated_at',
     CLIVersionsFetchInterval: 'cli_versions_fetch_interval',
+    GroupRatioLimit: 'group_ratio_limit',
 } as const;
 
 /**
