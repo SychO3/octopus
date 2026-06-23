@@ -461,6 +461,25 @@
         },
         "data": {
             "title": "数据管理"
+        },
+        "impersonate": {
+            "title": "客户端模拟",
+            "description": "模拟官方 CLI 客户端的请求头，提高兼容性",
+            "claude": "Claude CLI",
+            "codex": "Codex CLI",
+            "gemini": "Gemini CLI",
+            "version": "版本",
+            "lastUpdated": "最后更新",
+            "neverUpdated": "从未更新",
+            "refreshNow": "立即刷新",
+            "refreshing": "刷新中...",
+            "refreshSuccess": "版本信息已更新",
+            "refreshFailed": "刷新失败",
+            "fetchInterval": "自动刷新间隔",
+            "hours": "小时",
+            "autoFetch": "自动获取",
+            "customOverride": "自定义覆盖",
+            "customPlaceholder": "留空使用自动获取的版本"
         }
     },
     "group": {

@@ -461,6 +461,25 @@
         },
         "data": {
             "title": "Data Management"
+        },
+        "impersonate": {
+            "title": "Client Impersonation",
+            "description": "Simulate official CLI client request headers for better compatibility",
+            "claude": "Claude CLI",
+            "codex": "Codex CLI",
+            "gemini": "Gemini CLI",
+            "version": "Version",
+            "lastUpdated": "Last Updated",
+            "neverUpdated": "Never",
+            "refreshNow": "Refresh Now",
+            "refreshing": "Refreshing...",
+            "refreshSuccess": "Versions updated",
+            "refreshFailed": "Refresh failed",
+            "fetchInterval": "Auto refresh interval",
+            "hours": "hours",
+            "autoFetch": "Auto fetch",
+            "customOverride": "Custom override",
+            "customPlaceholder": "Leave empty to use auto-fetched version"
         }
     },
     "group": {

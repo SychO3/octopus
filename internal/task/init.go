@@ -98,4 +98,11 @@ func Init() {
 		outlierIntervalMinutes = 2
 	}
 	Register(string(model.SettingKeyOutlierRetireInterval), time.Duration(outlierIntervalMinutes)*time.Minute, false, SiteOutlierRetireTask)
+
+	// 注册 CLI 版本自动拉取任务
+	cliFetchIntervalHours, err := op.SettingGetInt(model.SettingKeyCLIVersionsFetchInterval)
+	if err != nil || cliFetchIntervalHours <= 0 {
+		cliFetchIntervalHours = 6
+	}
+	Register(string(model.SettingKeyCLIVersionsFetchInterval), time.Duration(cliFetchIntervalHours)*time.Hour, true, FetchCLIVersions)
 }
