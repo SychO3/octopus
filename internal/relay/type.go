@@ -91,6 +91,7 @@ type relayRequest struct {
 	metrics         *RelayMetrics
 	apiKeyID        int
 	requestModel    string
+	originalModel   string // pre-mapping model name from the user request
 	groupID         int
 	groupSessionTTL int
 	iter            *balancer.Iterator

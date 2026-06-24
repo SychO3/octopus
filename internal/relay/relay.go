@@ -77,6 +77,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		}
 	}
 
+	originalModel := internalRequest.Model
 	requestModel := op.ModelMappingResolve(internalRequest.Model)
 	internalRequest.Model = requestModel
 	apiKeyID := c.GetInt("api_key_id")
@@ -117,6 +118,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		metrics:         metrics,
 		apiKeyID:        apiKeyID,
 		requestModel:    requestModel,
+		originalModel:   originalModel,
 		groupID:         group.ID,
 		groupSessionTTL: group.SessionKeepTime,
 		iter:            iter,
@@ -1797,6 +1799,20 @@ func (ra *relayAttempt) isAnthropicPassthroughStreamRequest() bool {
 	return ra.internalRequest != nil && ra.internalRequest.Stream != nil && *ra.internalRequest.Stream
 }
 
+func (ra *relayAttempt) applyModelMappingToPassthroughChunk(chunk []byte) []byte {
+	if ra.originalModel == ra.requestModel || ra.originalModel == "" {
+		return chunk
+	}
+	actual := ra.internalRequest.Model
+	if actual == "" {
+		return chunk
+	}
+	if bytes.Contains(chunk, []byte(actual)) {
+		return bytes.ReplaceAll(chunk, []byte(actual), []byte(ra.originalModel))
+	}
+	return chunk
+}
+
 func (ra *relayAttempt) normalizeAnthropicPassthroughStreamHeaders(outboundRequest *http.Request) {
 	if outboundRequest == nil {
 		return
@@ -2102,6 +2118,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 				chunk = candidate
 				nativeAnthropicPending.Reset()
 			}
+			chunk = ra.applyModelMappingToPassthroughChunk(chunk)
 			_, _ = rawStream.Write(chunk)
 			if _, werr := writer.Write(chunk); werr != nil {
 				return werr
@@ -2366,6 +2383,7 @@ func (ra *relayAttempt) handleResponsePassthroughAnthropic(ctx context.Context, 
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	body = ra.applyModelMappingToPassthroughChunk(body)
 	ra.c.Data(http.StatusOK, contentType, body)
 
 	// 旁路解析：复用 outbound.TransformResponse → inbound.TransformResponse 的 storedResponse
