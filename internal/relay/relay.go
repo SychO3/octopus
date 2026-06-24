@@ -1272,6 +1272,11 @@ func (ra *relayAttempt) encodeInboundStreamEvents(ctx context.Context, events []
 	if len(events) == 0 {
 		return nil, nil
 	}
+	for i := range events {
+		if events[i].Model != "" && events[i].Model != ra.requestModel {
+			events[i].Model = ra.requestModel
+		}
+	}
 	inEventAdapter, ok := ra.inAdapter.(model.InboundStreamEventTransformer)
 	if !ok {
 		return nil, nil
@@ -1289,6 +1294,9 @@ func (ra *relayAttempt) decodeOutboundStreamResponse(ctx context.Context, data [
 }
 
 func (ra *relayAttempt) encodeInboundStreamResponse(ctx context.Context, internalStream *model.InternalLLMResponse) ([]byte, error) {
+	if internalStream.Model != "" && internalStream.Model != ra.requestModel {
+		internalStream.Model = ra.requestModel
+	}
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
@@ -1303,6 +1311,10 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
 		return fmt.Errorf("failed to transform outbound response: %w", err)
+	}
+
+	if internalResponse.Model != "" && internalResponse.Model != ra.requestModel {
+		internalResponse.Model = ra.requestModel
 	}
 
 	inResponse, err := ra.inAdapter.TransformResponse(ctx, internalResponse)
@@ -1778,6 +1790,17 @@ func (ra *relayAttempt) forwardViaHTTPPassthroughAnthropic(ctx context.Context) 
 	return response.StatusCode, nil
 }
 
+func (ra *relayAttempt) rewriteUpstreamModelInChunk(chunk []byte) []byte {
+	upstreamModel := ra.internalRequest.Model
+	if upstreamModel == "" || upstreamModel == ra.requestModel {
+		return chunk
+	}
+	if bytes.Contains(chunk, []byte(upstreamModel)) {
+		return bytes.ReplaceAll(chunk, []byte(upstreamModel), []byte(ra.requestModel))
+	}
+	return chunk
+}
+
 func (ra *relayAttempt) isAnthropicPassthroughStreamRequest() bool {
 	if ra == nil {
 		return false
@@ -2093,6 +2116,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 				chunk = candidate
 				nativeAnthropicPending.Reset()
 			}
+			chunk = ra.rewriteUpstreamModelInChunk(chunk)
 			_, _ = rawStream.Write(chunk)
 			if _, werr := writer.Write(chunk); werr != nil {
 				return werr
@@ -2357,6 +2381,7 @@ func (ra *relayAttempt) handleResponsePassthroughAnthropic(ctx context.Context, 
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	body = ra.rewriteUpstreamModelInChunk(body)
 	ra.c.Data(http.StatusOK, contentType, body)
 
 	// 旁路解析：复用 outbound.TransformResponse → inbound.TransformResponse 的 storedResponse
