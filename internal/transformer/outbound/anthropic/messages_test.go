@@ -190,6 +190,87 @@ func TestTransformRequestRawKeepsThinkingWithoutSignatureField(t *testing.T) {
 	}
 }
 
+func TestTransformRequestRawMirrorsToolResultImagesForVisionCompatibility(t *testing.T) {
+	outbound := &MessageOutbound{}
+	rawBody := []byte(`{
+		"model":"internal-alias",
+		"max_tokens":16,
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"tooluse_image","name":"Read","input":{"file_path":"receipt.jpg"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"tooluse_image","content":[
+					{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"abc123"}},
+					{"type":"text","text":"metadata"}
+				]}
+			]}
+		]
+	}`)
+
+	req, err := outbound.TransformRequestRaw(
+		context.Background(),
+		rawBody,
+		"claude-3-5-sonnet-20241022",
+		"https://example.com/v1",
+		"test-key",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("TransformRequestRaw() error = %v", err)
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(req.Body) error = %v", err)
+	}
+	var payload struct {
+		Messages []struct {
+			Content []struct {
+				Type    string            `json:"type"`
+				Content []json.RawMessage `json:"content,omitempty"`
+				Source  *struct {
+					Type      string `json:"type"`
+					MediaType string `json:"media_type"`
+					Data      string `json:"data"`
+				} `json:"source,omitempty"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal rewritten body error = %v; body=%s", err, string(body))
+	}
+	if len(payload.Messages) != 2 {
+		t.Fatalf("expected messages to survive unchanged, got %d: %s", len(payload.Messages), string(body))
+	}
+	content := payload.Messages[1].Content
+	if len(content) != 2 {
+		t.Fatalf("expected original tool_result plus mirrored image, got %d blocks: %s", len(content), string(body))
+	}
+	if content[0].Type != "tool_result" {
+		t.Fatalf("expected original tool_result to stay first, got %+v", content)
+	}
+	if len(content[0].Content) != 1 {
+		t.Fatalf("expected image to be removed from tool_result content, got %d nested blocks", len(content[0].Content))
+	}
+	var remainingToolResultBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content[0].Content[0], &remainingToolResultBlock); err != nil {
+		t.Fatalf("unmarshal remaining tool result block error = %v", err)
+	}
+	if remainingToolResultBlock.Type != "text" || remainingToolResultBlock.Text != "metadata" {
+		t.Fatalf("expected non-image tool result content to stay, got %+v", remainingToolResultBlock)
+	}
+	if content[1].Type != "image" || content[1].Source == nil {
+		t.Fatalf("expected mirrored ordinary image block, got %+v", content[1])
+	}
+	if content[1].Source.Type != "base64" || content[1].Source.MediaType != "image/jpeg" || content[1].Source.Data != "abc123" {
+		t.Fatalf("mirrored image source changed, got %+v", content[1].Source)
+	}
+}
+
 // TestCollectBetaHeadersAutomation covers A-H7 — each new signal drives a
 // specific anthropic-beta header. The test is table-driven so adding a
 // future trigger only needs a new row, not a whole test function.
