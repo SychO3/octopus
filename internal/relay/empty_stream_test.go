@@ -139,6 +139,27 @@ func TestPassthroughAnthropicConvertedOpenAIEmptyAssistantStopFailsBeforeWrite(t
 	}
 }
 
+func TestPassthroughAnthropicConvertedOpenAIControlOnlyStreamFailsBeforeWrite(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	body := strings.Join([]string{
+		`data: {"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[{"index":0,"delta":{"role":"assistant"}}],"usage":{"prompt_tokens":29635,"completion_tokens":1,"total_tokens":29636}}`,
+		"",
+		`data: {"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":29635,"completion_tokens":1,"total_tokens":29636}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseTestResponse(body))
+	if !errors.Is(err, errEmptyUpstreamStream) {
+		t.Fatalf("expected errEmptyUpstreamStream for control-only assistant stream, got %v", err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
+
 func TestPassthroughAnthropicNativeEmptyAssistantStopFailsBeforeWrite(t *testing.T) {
 	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
 
