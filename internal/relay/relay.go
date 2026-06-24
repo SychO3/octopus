@@ -19,6 +19,7 @@ import (
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/outlierwindow"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
+	"github.com/bestruirui/octopus/internal/relay/stream"
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -614,6 +615,7 @@ func isContinuationTransportFailure(err error) bool {
 	message := relayErrorMessage(err)
 	return isUpstreamWSConnectionBroken(err) ||
 		needsConversationRestart(message) ||
+		errors.Is(err, errEmptyUpstreamStream) ||
 		strings.Contains(message, "ws stream ended before first event")
 }
 
@@ -624,119 +626,51 @@ func (ra *relayAttempt) clientRequestHeaders() http.Header {
 	return ra.c.Request.Header
 }
 
-// handleWSStreamResponse processes events from an upstream WebSocket reader.
+// handleWSStreamResponse processes events from an upstream WebSocket reader
+// via the unified StreamProcessor (WSSource).
 func (ra *relayAttempt) handleWSStreamResponse(ctx context.Context, reader *wsUpstreamReader) error {
-	// 交接早期心跳给本函数内层 ticker
+	// 交接早期心跳给 StreamProcessor 内层 ticker
 	ra.heartbeat.Hand()
 
-	// Determine client writer
-	writer := ra.getStreamWriter()
-
-	// Set SSE response headers (for HTTP clients; WS clients handle this differently)
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.Header().Set("X-Accel-Buffering", "no")
-
-	heartbeatTicker, heartbeatC := newStreamHeartbeatTicker()
-	if heartbeatTicker != nil {
-		defer heartbeatTicker.Stop()
+	transform := func(ctx context.Context, data []byte) ([]byte, error) {
+		return ra.transformStreamData(ctx, string(data))
 	}
 
-	firstToken := true
-	var firstTokenTimer *time.Timer
-	var firstTokenC <-chan time.Time
+	var firstTokenTimeout time.Duration
 	if ra.firstTokenTimeOutSec > 0 {
-		firstTokenTimer = time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
-		firstTokenC = firstTokenTimer.C
-		defer func() {
-			if firstTokenTimer != nil {
-				firstTokenTimer.Stop()
-			}
-		}()
+		firstTokenTimeout = time.Duration(ra.firstTokenTimeOutSec) * time.Second
 	}
 
-	// 异步读取上游 WS 事件，使主循环可以与 heartbeat/ctx/firstToken 并行 select
-	type wsReadResult struct {
-		data []byte
-		err  error
-	}
-	results := make(chan wsReadResult, 1)
-	safe.Go("relay-ws-stream-read", func() {
-		defer close(results)
-		for {
-			eventData, err := reader.ReadEvent(ctx)
-			results <- wsReadResult{data: eventData, err: err}
-			if err != nil {
-				return
-			}
-		}
+	processor := stream.NewStreamProcessor(stream.StreamConfig{
+		Source:            stream.NewWSSource(reader),
+		Transform:         transform,
+		Writer:            ra.getStreamWriter(),
+		Context:           ctx,
+		FirstTokenTimeout: firstTokenTimeout,
+		HeartbeatInterval: streamHeartbeatInterval(),
+		OnFirstToken: func() {
+			ra.metrics.SetFirstTokenTime(time.Now())
+		},
 	})
 
-	for {
-		select {
-		case <-ctx.Done():
-			if isLocalRelayBudgetExceeded(ctx, contextError(ctx)) {
-				return contextError(ctx)
-			}
+	err := processor.Run()
+
+	if processor.PayloadWritten() {
+		ra.streamPayloadWritten.Store(true)
+	}
+
+	if err != nil {
+		if strings.Contains(err.Error(), "first token timeout") {
+			return ra.firstTokenTimeoutError()
+		}
+		// 客户端断连：上下文已取消，按正常结束处理，避免误记 WS 失败。
+		if errors.Is(err, context.Canceled) && contextError(ctx) != nil && !isLocalRelayBudgetExceeded(ctx, contextError(ctx)) {
 			log.Debugf("client disconnected during ws stream")
 			return nil
-		case <-firstTokenC:
-			log.Warnf("first token timeout (%ds) on ws stream, switching channel", ra.firstTokenTimeOutSec)
-			return ra.firstTokenTimeoutError()
-		case <-heartbeatC:
-			if err := writeSSEHeartbeat(writer); err != nil {
-				return err
-			}
-		case r, ok := <-results:
-			if !ok {
-				if firstToken {
-					return fmt.Errorf("ws stream ended before first event")
-				}
-				log.Debugf("ws stream end")
-				return nil
-			}
-			if r.err != nil {
-				if r.err == io.EOF {
-					if firstToken {
-						return fmt.Errorf("ws stream ended before first event")
-					}
-					log.Debugf("ws stream end")
-					return nil
-				}
-				return fmt.Errorf("ws stream read error: %w", r.err)
-			}
-
-			// Transform through outbound → internal → inbound pipeline
-			data, err := ra.transformStreamData(ctx, string(r.data))
-			if err != nil || len(data) == 0 {
-				continue
-			}
-
-			if firstToken {
-				ra.metrics.SetFirstTokenTime(time.Now())
-				firstToken = false
-				if firstTokenTimer != nil {
-					if !firstTokenTimer.Stop() {
-						select {
-						case <-firstTokenTimer.C:
-						default:
-						}
-					}
-					firstTokenTimer = nil
-					firstTokenC = nil
-				}
-			}
-
-			if _, writeErr := writer.Write(data); writeErr != nil {
-				return writeErr
-			}
-			if writer.Written() {
-				ra.streamPayloadWritten.Store(true)
-			}
-			writer.Flush()
 		}
 	}
+
+	return err
 }
 
 // forwardViaHTTP forwards the request using traditional HTTP.
@@ -1079,9 +1013,10 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 // detectRouteMismatchTarget trigger substrings ("text/event-stream",
 // "/responses", "/messages", "anthropic-version", "responses api"), which
 // would corrupt managed route learning.
-var errEmptyUpstreamStream = errors.New("upstream stream ended without forwarding any payload")
+// 复用 stream 包的 sentinel，确保 StreamProcessor 返回的空流错误与本地 failover 判定一致。
+var errEmptyUpstreamStream = stream.ErrEmptyUpstreamStream
 
-// handleStreamResponse 处理流式响应
+// handleStreamResponse 处理标准（转换）流式响应，基于统一的 StreamProcessor。
 func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http.Response) error {
 	defer ra.closeFirstTokenBudget()
 
@@ -1090,144 +1025,50 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
 	}
 
-	// 交接早期心跳给本函数内层 ticker，避免双路 flush 竞争
+	// 交接早期心跳给 StreamProcessor 内层 ticker，避免双路 flush 竞争
 	ra.heartbeat.Hand()
 
-	writer := ra.getStreamWriter()
-
-	// 设置 SSE 响应头
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.Header().Set("X-Accel-Buffering", "no")
-
-	heartbeatTicker, heartbeatC := newStreamHeartbeatTicker()
-	if heartbeatTicker != nil {
-		defer heartbeatTicker.Stop()
+	transform := func(ctx context.Context, data []byte) ([]byte, error) {
+		return ra.transformStreamData(ctx, string(data))
 	}
 
-	firstToken := true
+	var firstTokenTimeout time.Duration
+	if ra.firstTokenTimeOutSec > 0 && ra.firstTokenBudget == nil {
+		firstTokenTimeout = time.Duration(ra.firstTokenTimeOutSec) * time.Second
+	}
 
-	disconnect := func() error {
-		err := contextError(ctx)
+	processor := stream.NewStreamProcessor(stream.StreamConfig{
+		Source:            stream.NewSSESource(response.Body, maxSSEEventSize),
+		Transform:         transform,
+		Writer:            ra.getStreamWriter(),
+		Context:           ctx,
+		FirstTokenTimeout: firstTokenTimeout,
+		HeartbeatInterval: streamHeartbeatInterval(),
+		OnFirstToken: func() {
+			ra.metrics.SetFirstTokenTime(time.Now())
+			ra.stopFirstTokenTimer()
+		},
+	})
+
+	err := processor.Run()
+
+	if processor.PayloadWritten() {
+		ra.streamPayloadWritten.Store(true)
+	}
+
+	if err != nil {
+		// 首 token 超时：StreamProcessor 返回带 "first token timeout" 的错误。
+		if strings.Contains(err.Error(), "first token timeout") {
+			_ = response.Body.Close()
+			return ra.firstTokenTimeoutError()
+		}
+		// 客户端断连可能表现为本地预算超时，需走专用判定。
 		if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, err); timeoutErr != nil {
 			return timeoutErr
 		}
-		if isLocalRelayBudgetExceeded(ctx, err) {
-			return err
-		}
-		log.Debugf("client disconnected, stopping stream: written=%t first_token_seen=%t elapsed=%s", ra.streamPayloadWritten.Load(), !firstToken, time.Since(ra.metrics.StartTime))
-		return err
 	}
 
-	type sseReadResult struct {
-		data string
-		err  error
-	}
-	results := make(chan sseReadResult, 1)
-	safe.Go("relay-stream-read", func() {
-		defer close(results)
-		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
-		for ev, err := range sse.Read(response.Body, readCfg) {
-			if err != nil {
-				results <- sseReadResult{err: err}
-				return
-			}
-			results <- sseReadResult{data: ev.Data}
-		}
-	})
-
-	var firstTokenTimer *time.Timer
-	var firstTokenC <-chan time.Time
-	if firstToken && ra.firstTokenTimeOutSec > 0 && ra.firstTokenBudget == nil {
-		firstTokenTimer = time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
-		firstTokenC = firstTokenTimer.C
-		defer func() {
-			if firstTokenTimer != nil {
-				firstTokenTimer.Stop()
-			}
-		}()
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			// 上游 EOF 与客户端断连可能同时发生，select 在多就绪 case 中随机选择，
-			// 此时优先消费 results 中已就绪的终止信号，避免把正常结束的流误判为断连。
-			select {
-			case r, ok := <-results:
-				if !ok || (r.err != nil && r.err == io.EOF) {
-					if !ra.streamPayloadWritten.Load() {
-						return errEmptyUpstreamStream
-					}
-					log.Debugf("stream end")
-					return nil
-				}
-				if r.err != nil {
-					if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, r.err); timeoutErr != nil {
-						return timeoutErr
-					}
-					// 断连取消沿出站请求传播、被读侧先观察到时，按断连处理而非上游流失败
-					if !errors.Is(r.err, context.Canceled) {
-						log.Warnf("failed to read event: %v", r.err)
-						return fmt.Errorf("failed to read stream event: %w", r.err)
-					}
-				}
-			default:
-			}
-			return disconnect()
-		case <-firstTokenC:
-			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
-			_ = response.Body.Close()
-			return ra.firstTokenTimeoutError()
-		case <-heartbeatC:
-			if err := writeSSEHeartbeat(writer); err != nil {
-				return err
-			}
-		case r, ok := <-results:
-			if !ok {
-				if !ra.streamPayloadWritten.Load() {
-					return errEmptyUpstreamStream
-				}
-				log.Debugf("stream end")
-				return nil
-			}
-			if r.err != nil {
-				if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, r.err); timeoutErr != nil {
-					return timeoutErr
-				}
-				if errors.Is(r.err, context.Canceled) && contextError(ctx) != nil {
-					return disconnect()
-				}
-				log.Warnf("failed to read event: %v", r.err)
-				return fmt.Errorf("failed to read stream event: %w", r.err)
-			}
-
-			data, err := ra.transformStreamData(ctx, r.data)
-			if err != nil || len(data) == 0 {
-				continue
-			}
-			if firstToken {
-				ra.metrics.SetFirstTokenTime(time.Now())
-				firstToken = false
-				ra.stopFirstTokenTimer()
-				if firstTokenTimer != nil {
-					if !firstTokenTimer.Stop() {
-						select {
-						case <-firstTokenTimer.C:
-						default:
-						}
-					}
-					firstTokenTimer = nil
-					firstTokenC = nil
-				}
-			}
-
-			ra.streamPayloadWritten.Store(true)
-			ra.getStreamWriter().Write(data)
-			ra.getStreamWriter().Flush()
-		}
-	}
+	return err
 }
 
 // transformStreamData 转换流式数据
