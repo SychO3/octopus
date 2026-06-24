@@ -28,10 +28,10 @@ func (s *WSSource) ReadEvent(ctx context.Context) ([]byte, error) {
 	return s.reader.ReadEvent(ctx)
 }
 
-// Close releases the WebSocket connection.
+// Close is a no-op: the WebSocket connection lifecycle (pool return vs removal)
+// is owned by the relay caller, which calls reader.Close()/CloseWithError()
+// based on success/failure after the processor returns. Closing here would race
+// with the caller's close and double-return the pooled connection.
 func (s *WSSource) Close() error {
-	if s.reader != nil {
-		s.reader.Close()
-	}
 	return nil
 }

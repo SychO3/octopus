@@ -1668,7 +1668,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 			}
 			ra.streamPayloadWritten.Store(true)
 			writer.Flush()
-			ra.collectAnthropicPassthroughMetrics(ctx, converted)
+			ra.collectPassthroughMetrics(ctx, converted)
 			ra.collectResponse()
 			return nil
 		}
@@ -1697,13 +1697,16 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 		err   error
 	}
 	results := make(chan rawReadResult, 1)
+	// 复用 stream.RawSource 作为底层字节读取器；协议检测、跨块缓冲、空流重试等
+	// 有状态逻辑仍由本函数的 select 循环负责（Anthropic 直通需在直通路径做协议转换，
+	// 无法套用 StreamProcessor 的无状态 Transform 契约）。
+	rawSource := stream.NewRawSource(response.Body, 32*1024)
 	safe.Go("relay-stream-read", func() {
 		defer close(results)
-		buf := make([]byte, 32*1024)
+		defer rawSource.Close()
 		for {
-			n, err := response.Body.Read(buf)
-			if n > 0 {
-				chunk := append([]byte(nil), buf[:n]...)
+			chunk, err := rawSource.ReadEvent(ctx)
+			if len(chunk) > 0 {
 				results <- rawReadResult{chunk: chunk}
 			}
 			if err != nil {
@@ -1757,7 +1760,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 		if rawStream.Len() == 0 {
 			return errEmptyUpstreamStream
 		}
-		ra.collectAnthropicPassthroughMetrics(c, rawStream.Bytes())
+		ra.collectPassthroughMetrics(c, rawStream.Bytes())
 		ra.collectResponse()
 		log.Debugf("stream end")
 		return nil
@@ -1778,7 +1781,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 		}
 		log.Debugf("client disconnected, stopping stream: written=%t raw_bytes=%d first_token_seen=%t elapsed=%s", ra.streamPayloadWritten.Load(), rawStream.Len(), !firstToken, time.Since(ra.metrics.StartTime))
 		if rawStream.Len() > 0 {
-			ra.collectAnthropicPassthroughMetrics(context.Background(), rawStream.Bytes())
+			ra.collectPassthroughMetrics(context.Background(), rawStream.Bytes())
 			ra.collectResponse()
 		}
 		return err
@@ -2101,37 +2104,6 @@ func writeAnthropicJSONSSE(out *bytes.Buffer, eventName string, payload any) err
 	out.Write(data)
 	out.WriteString("\n\n")
 	return nil
-}
-
-func (ra *relayAttempt) collectAnthropicPassthroughMetrics(ctx context.Context, rawStream []byte) {
-	if len(rawStream) == 0 {
-		return
-	}
-	outEventAdapter, outOk := ra.outAdapter.(model.OutboundStreamEventTransformer)
-	inEventAdapter, inOk := ra.inAdapter.(model.InboundStreamEventTransformer)
-	if outOk && inOk {
-		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
-		for ev, err := range sse.Read(bytes.NewReader(rawStream), readCfg) {
-			if err != nil {
-				log.Debugf("anthropic passthrough metrics parse skipped: %v", err)
-				return
-			}
-			if events, terr := outEventAdapter.TransformStreamEvent(ctx, []byte(ev.Data)); terr == nil && len(events) > 0 {
-				_, _ = inEventAdapter.TransformStreamEvents(ctx, events)
-			}
-		}
-		return
-	}
-	readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
-	for ev, err := range sse.Read(bytes.NewReader(rawStream), readCfg) {
-		if err != nil {
-			log.Debugf("anthropic passthrough metrics parse skipped: %v", err)
-			return
-		}
-		if internalStream, terr := ra.outAdapter.TransformStream(ctx, []byte(ev.Data)); terr == nil && internalStream != nil {
-			_, _ = ra.inAdapter.TransformStream(ctx, internalStream)
-		}
-	}
 }
 
 // handleResponsePassthroughAnthropic 非流式直通：upstream JSON 原样写回客户端；旁路解析用于 metrics。
