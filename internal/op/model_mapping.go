@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	modelMappingCache     map[string]string
-	modelMappingCacheLock sync.RWMutex
+	modelMappingCache        map[string]string
+	modelMappingReverseCache map[string]string
+	modelMappingCacheLock    sync.RWMutex
 )
 
 func ModelMappingResolve(requestModel string) string {
@@ -27,17 +28,35 @@ func ModelMappingResolve(requestModel string) string {
 	return requestModel
 }
 
+// ModelMappingReverse maps an upstream model name back to the user-facing request name.
+func ModelMappingReverse(actualModel string) string {
+	modelMappingCacheLock.RLock()
+	defer modelMappingCacheLock.RUnlock()
+	if modelMappingReverseCache == nil {
+		return actualModel
+	}
+	if request, ok := modelMappingReverseCache[strings.ToLower(actualModel)]; ok {
+		return request
+	}
+	return actualModel
+}
+
 func ModelMappingRefreshCache(ctx context.Context) error {
 	var mappings []model.ModelMapping
 	if err := db.GetDB().WithContext(ctx).Where("enabled = ?", true).Find(&mappings).Error; err != nil {
 		return err
 	}
 	cache := make(map[string]string, len(mappings))
+	reverse := make(map[string]string, len(mappings))
 	for _, m := range mappings {
-		cache[strings.ToLower(strings.TrimSpace(m.RequestName))] = strings.TrimSpace(m.ActualName)
+		req := strings.TrimSpace(m.RequestName)
+		act := strings.TrimSpace(m.ActualName)
+		cache[strings.ToLower(req)] = act
+		reverse[strings.ToLower(act)] = req
 	}
 	modelMappingCacheLock.Lock()
 	modelMappingCache = cache
+	modelMappingReverseCache = reverse
 	modelMappingCacheLock.Unlock()
 	return nil
 }

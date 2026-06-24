@@ -1273,6 +1273,11 @@ func (ra *relayAttempt) encodeInboundStreamEvents(ctx context.Context, events []
 	if len(events) == 0 {
 		return nil, nil
 	}
+	for i := range events {
+		if events[i].Model != "" {
+			events[i].Model = op.ModelMappingReverse(events[i].Model)
+		}
+	}
 	inEventAdapter, ok := ra.inAdapter.(model.InboundStreamEventTransformer)
 	if !ok {
 		return nil, nil
@@ -1290,6 +1295,7 @@ func (ra *relayAttempt) decodeOutboundStreamResponse(ctx context.Context, data [
 }
 
 func (ra *relayAttempt) encodeInboundStreamResponse(ctx context.Context, internalStream *model.InternalLLMResponse) ([]byte, error) {
+	internalStream.Model = op.ModelMappingReverse(internalStream.Model)
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
@@ -1305,6 +1311,8 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		log.Warnf("failed to transform response: %v", err)
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
+
+	internalResponse.Model = op.ModelMappingReverse(internalResponse.Model)
 
 	inResponse, err := ra.inAdapter.TransformResponse(ctx, internalResponse)
 	if err != nil {
