@@ -1917,6 +1917,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 	var openAIProtocol string
 	var openAIStreamBuffer []byte
 	var openAIChatTerminal openAIChatTerminalState
+	var nativeAnthropicPending bytes.Buffer
 	inboundStream, _ := ra.inAdapter.(model.InboundStreamEventTransformer)
 
 	flushOpenAIChatTerminal := func() error {
@@ -2056,6 +2057,28 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 			}
 			if len(chunk) == 0 {
 				continue
+			}
+			if openAIProtocol == "" {
+				candidate := append(append([]byte(nil), nativeAnthropicPending.Bytes()...), chunk...)
+				hasPayload, isTerminal, hasCompleteFrame, passthrough, err := classifyAnthropicSSEPayload(candidate)
+				if err != nil {
+					return err
+				}
+				if !hasCompleteFrame {
+					nativeAnthropicPending.Reset()
+					_, _ = nativeAnthropicPending.Write(candidate)
+					continue
+				}
+				if !hasPayload && !passthrough {
+					nativeAnthropicPending.Reset()
+					_, _ = nativeAnthropicPending.Write(candidate)
+					if isTerminal {
+						return errEmptyUpstreamStream
+					}
+					continue
+				}
+				chunk = candidate
+				nativeAnthropicPending.Reset()
 			}
 			_, _ = rawStream.Write(chunk)
 			if _, werr := writer.Write(chunk); werr != nil {
@@ -2645,6 +2668,96 @@ func isEmptyAnthropicAssistantStopSSE(data []byte) bool {
 		}
 	}
 	return hasMessageStart && hasMessageStop
+}
+
+func classifyAnthropicSSEPayload(data []byte) (hasPayload bool, isTerminal bool, hasCompleteFrame bool, passthrough bool, err error) {
+	pending := append([]byte(nil), data...)
+	frames := popCompleteSSEFrames(&pending)
+	if len(frames) == 0 {
+		return false, false, false, false, nil
+	}
+	for _, frame := range frames {
+		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
+		readAny := false
+		for ev, readErr := range sse.Read(bytes.NewReader(frame), readCfg) {
+			if readErr != nil {
+				return false, false, true, false, readErr
+			}
+			readAny = true
+			eventType := strings.TrimSpace(ev.Type)
+			if eventType == "" {
+				eventType = eventTypeFromSSEData(ev.Data)
+			}
+			switch eventType {
+			case "", "ping":
+				continue
+			case "message_start", "content_block_start", "content_block_stop", "message_delta":
+				if eventType == "content_block_start" && anthropicContentBlockStartHasPayload(ev.Data) {
+					hasPayload = true
+				}
+			case "content_block_delta":
+				if anthropicContentBlockDeltaHasPayload(ev.Data) {
+					hasPayload = true
+				}
+			case "message_stop":
+				isTerminal = true
+			case "error":
+				hasPayload = true
+			default:
+				return false, false, true, true, nil
+			}
+		}
+		if !readAny {
+			continue
+		}
+	}
+	return hasPayload, isTerminal, true, false, nil
+}
+
+func eventTypeFromSSEData(data string) string {
+	var event struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return ""
+	}
+	return event.Type
+}
+
+func anthropicContentBlockStartHasPayload(data string) bool {
+	var event struct {
+		ContentBlock *struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Data string `json:"data"`
+		} `json:"content_block"`
+	}
+	if err := json.Unmarshal([]byte(data), &event); err != nil || event.ContentBlock == nil {
+		return false
+	}
+	return event.ContentBlock.Type == "tool_use" ||
+		(event.ContentBlock.Type == "redacted_thinking" && event.ContentBlock.Data != "") ||
+		event.ContentBlock.ID != "" ||
+		event.ContentBlock.Name != ""
+}
+
+func anthropicContentBlockDeltaHasPayload(data string) bool {
+	var event struct {
+		Delta *struct {
+			Text        *string `json:"text"`
+			Thinking    *string `json:"thinking"`
+			Signature   *string `json:"signature"`
+			PartialJSON *string `json:"partial_json"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal([]byte(data), &event); err != nil || event.Delta == nil {
+		return false
+	}
+	return (event.Delta.Text != nil && *event.Delta.Text != "") ||
+		(event.Delta.Thinking != nil && *event.Delta.Thinking != "") ||
+		(event.Delta.Signature != nil && *event.Delta.Signature != "") ||
+		(event.Delta.PartialJSON != nil && *event.Delta.PartialJSON != "")
 }
 
 func openAIChatEventsAreOnlyMessageStart(events []model.StreamEvent) bool {
