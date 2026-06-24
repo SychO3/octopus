@@ -75,58 +75,15 @@ func StreamEventsFromInternalResponse(response *InternalLLMResponse) []StreamEve
 	}
 	events := make([]StreamEvent, 0, len(response.Choices)+1)
 	for _, choice := range response.Choices {
-		if choice.Delta != nil {
-			delta := choice.Delta
-			if delta.Role != "" {
-				events = append(events, StreamEvent{Kind: StreamEventKindMessageStart, ID: response.ID, Model: response.Model, Index: choice.Index, Role: delta.Role})
+		msg := choice.Delta
+		if msg == nil {
+			msg = choice.Message
+		}
+		if msg != nil {
+			if msg.Role != "" {
+				events = append(events, StreamEvent{Kind: StreamEventKindMessageStart, ID: response.ID, Model: response.Model, Index: choice.Index, Role: msg.Role})
 			}
-			for _, block := range delta.ReasoningBlocks {
-				switch block.Kind {
-				case ReasoningBlockKindThinking:
-					if block.Text != "" {
-						events = append(events, StreamEvent{Kind: StreamEventKindThinkingDelta, ID: response.ID, Model: response.Model, Index: choice.Index, Delta: &StreamDelta{Thinking: block.Text, Signature: block.Signature}})
-					} else if block.Signature != "" {
-						events = append(events, StreamEvent{Kind: StreamEventKindSignatureDelta, ID: response.ID, Model: response.Model, Index: choice.Index, Delta: &StreamDelta{Signature: block.Signature}})
-					}
-				case ReasoningBlockKindSignature:
-					if block.Signature != "" {
-						events = append(events, StreamEvent{Kind: StreamEventKindSignatureDelta, ID: response.ID, Model: response.Model, Index: choice.Index, Delta: &StreamDelta{Signature: block.Signature}})
-					}
-				case ReasoningBlockKindRedacted:
-					if block.Data != "" {
-						events = append(events, StreamEvent{Kind: StreamEventKindContentBlockStart, ID: response.ID, Model: response.Model, Index: choice.Index, ContentBlock: &StreamContentBlock{Type: string(ReasoningBlockKindRedacted), Data: block.Data}})
-						events = append(events, StreamEvent{Kind: StreamEventKindContentBlockStop, ID: response.ID, Model: response.Model, Index: choice.Index, ContentBlock: &StreamContentBlock{Type: string(ReasoningBlockKindRedacted)}})
-					}
-				}
-			}
-			if len(delta.ReasoningBlocks) == 0 {
-				if reasoning := delta.GetReasoningContent(); reasoning != "" {
-					events = append(events, StreamEvent{Kind: StreamEventKindThinkingDelta, ID: response.ID, Model: response.Model, Index: choice.Index, Delta: &StreamDelta{Thinking: reasoning}})
-				}
-				if delta.ReasoningSignature != nil && *delta.ReasoningSignature != "" {
-					events = append(events, StreamEvent{Kind: StreamEventKindSignatureDelta, ID: response.ID, Model: response.Model, Index: choice.Index, Delta: &StreamDelta{Signature: *delta.ReasoningSignature}})
-				}
-				for _, data := range delta.RedactedThinkingBlocks {
-					if data != "" {
-						events = append(events, StreamEvent{Kind: StreamEventKindContentBlockStart, ID: response.ID, Model: response.Model, Index: choice.Index, ContentBlock: &StreamContentBlock{Type: string(ReasoningBlockKindRedacted), Data: data}})
-						events = append(events, StreamEvent{Kind: StreamEventKindContentBlockStop, ID: response.ID, Model: response.Model, Index: choice.Index, ContentBlock: &StreamContentBlock{Type: string(ReasoningBlockKindRedacted)}})
-					}
-				}
-			}
-			if delta.Content.Content != nil && *delta.Content.Content != "" {
-				events = append(events, StreamEvent{Kind: StreamEventKindTextDelta, ID: response.ID, Model: response.Model, Index: choice.Index, Delta: &StreamDelta{Text: *delta.Content.Content}})
-			}
-			if delta.Refusal != "" {
-				events = append(events, StreamEvent{Kind: StreamEventKindTextDelta, ID: response.ID, Model: response.Model, Index: choice.Index, Delta: &StreamDelta{Refusal: delta.Refusal}})
-			}
-			for _, toolCall := range delta.ToolCalls {
-				toolCall := toolCall
-				event := StreamEvent{Kind: StreamEventKindToolCallDelta, ID: response.ID, Model: response.Model, Index: choice.Index, ToolCall: &toolCall}
-				if toolCall.Function.Arguments != "" {
-					event.Delta = &StreamDelta{Arguments: toolCall.Function.Arguments}
-				}
-				events = append(events, event)
-			}
+			events = append(events, streamEventsFromMessage(response, choice.Index, msg)...)
 		}
 		if choice.FinishReason != nil {
 			event := StreamEvent{Kind: StreamEventKindMessageStop, ID: response.ID, Model: response.Model, Index: choice.Index, StopReason: ParseFinishReason(*choice.FinishReason), StopSequence: choice.StopSequence}
@@ -140,6 +97,61 @@ func StreamEventsFromInternalResponse(response *InternalLLMResponse) []StreamEve
 		event := StreamEvent{Kind: StreamEventKindUsageDelta, ID: response.ID, Model: response.Model, Usage: response.Usage}
 		if len(response.RawResponsesOutputItems) > 0 {
 			event.ProviderExtensions = &ProviderExtensions{OpenAI: &OpenAIExtension{RawResponseItems: response.RawResponsesOutputItems}}
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func streamEventsFromMessage(response *InternalLLMResponse, choiceIndex int, msg *Message) []StreamEvent {
+	if msg == nil {
+		return nil
+	}
+	events := make([]StreamEvent, 0, 4)
+	for _, block := range msg.ReasoningBlocks {
+		switch block.Kind {
+		case ReasoningBlockKindThinking:
+			if block.Text != "" {
+				events = append(events, StreamEvent{Kind: StreamEventKindThinkingDelta, ID: response.ID, Model: response.Model, Index: choiceIndex, Delta: &StreamDelta{Thinking: block.Text, Signature: block.Signature}})
+			} else if block.Signature != "" {
+				events = append(events, StreamEvent{Kind: StreamEventKindSignatureDelta, ID: response.ID, Model: response.Model, Index: choiceIndex, Delta: &StreamDelta{Signature: block.Signature}})
+			}
+		case ReasoningBlockKindSignature:
+			if block.Signature != "" {
+				events = append(events, StreamEvent{Kind: StreamEventKindSignatureDelta, ID: response.ID, Model: response.Model, Index: choiceIndex, Delta: &StreamDelta{Signature: block.Signature}})
+			}
+		case ReasoningBlockKindRedacted:
+			if block.Data != "" {
+				events = append(events, StreamEvent{Kind: StreamEventKindContentBlockStart, ID: response.ID, Model: response.Model, Index: choiceIndex, ContentBlock: &StreamContentBlock{Type: string(ReasoningBlockKindRedacted), Data: block.Data}})
+				events = append(events, StreamEvent{Kind: StreamEventKindContentBlockStop, ID: response.ID, Model: response.Model, Index: choiceIndex, ContentBlock: &StreamContentBlock{Type: string(ReasoningBlockKindRedacted)}})
+			}
+		}
+	}
+	if len(msg.ReasoningBlocks) == 0 {
+		if reasoning := msg.GetReasoningContent(); reasoning != "" {
+			events = append(events, StreamEvent{Kind: StreamEventKindThinkingDelta, ID: response.ID, Model: response.Model, Index: choiceIndex, Delta: &StreamDelta{Thinking: reasoning}})
+		}
+		if msg.ReasoningSignature != nil && *msg.ReasoningSignature != "" {
+			events = append(events, StreamEvent{Kind: StreamEventKindSignatureDelta, ID: response.ID, Model: response.Model, Index: choiceIndex, Delta: &StreamDelta{Signature: *msg.ReasoningSignature}})
+		}
+		for _, data := range msg.RedactedThinkingBlocks {
+			if data != "" {
+				events = append(events, StreamEvent{Kind: StreamEventKindContentBlockStart, ID: response.ID, Model: response.Model, Index: choiceIndex, ContentBlock: &StreamContentBlock{Type: string(ReasoningBlockKindRedacted), Data: data}})
+				events = append(events, StreamEvent{Kind: StreamEventKindContentBlockStop, ID: response.ID, Model: response.Model, Index: choiceIndex, ContentBlock: &StreamContentBlock{Type: string(ReasoningBlockKindRedacted)}})
+			}
+		}
+	}
+	if msg.Content.Content != nil && *msg.Content.Content != "" {
+		events = append(events, StreamEvent{Kind: StreamEventKindTextDelta, ID: response.ID, Model: response.Model, Index: choiceIndex, Delta: &StreamDelta{Text: *msg.Content.Content}})
+	}
+	if msg.Refusal != "" {
+		events = append(events, StreamEvent{Kind: StreamEventKindTextDelta, ID: response.ID, Model: response.Model, Index: choiceIndex, Delta: &StreamDelta{Refusal: msg.Refusal}})
+	}
+	for _, toolCall := range msg.ToolCalls {
+		toolCall := toolCall
+		event := StreamEvent{Kind: StreamEventKindToolCallDelta, ID: response.ID, Model: response.Model, Index: choiceIndex, ToolCall: &toolCall}
+		if toolCall.Function.Arguments != "" {
+			event.Delta = &StreamDelta{Arguments: toolCall.Function.Arguments}
 		}
 		events = append(events, event)
 	}

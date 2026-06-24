@@ -241,6 +241,57 @@ func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatJSON(t *testi
 	}
 }
 
+func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatSSEMessageChoices(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rawSSE := strings.Join([]string{
+		`data: {"id":"msg_split","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"thinking first"},"finish_reason":"stop"},{"index":1,"message":{"content":"visible answer"}}],"object":"chat.completion","created":0,"model":"claude-opus-4.6","usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	internalReq := &transformerModel.InternalLLMRequest{
+		Model:        "claude-opus-4-6",
+		Stream:       boolPtr(true),
+		RawAPIFormat: transformerModel.APIFormatAnthropicMessage,
+	}
+	req := &relayRequest{
+		c:               c,
+		inAdapter:       inbound.Get(inbound.InboundTypeAnthropic),
+		internalRequest: internalReq,
+		metrics:         NewRelayMetrics(1, internalReq.Model, nil, internalReq),
+		apiKeyID:        1,
+		requestModel:    internalReq.Model,
+	}
+	ra := &relayAttempt{
+		relayRequest: req,
+		outAdapter:   outbound.Get(outbound.OutboundTypeAnthropic),
+	}
+
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(rawSSE))),
+	}
+
+	if err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response); err != nil {
+		t.Fatalf("handleStreamResponsePassthroughAnthropic() error = %v", err)
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"thinking":"thinking first"`) || !strings.Contains(got, `"text":"visible answer"`) {
+		t.Fatalf("expected message-based OpenAI SSE choices to be converted, got %q", got)
+	}
+	textIdx := strings.Index(got, `"text":"visible answer"`)
+	stopIdx := strings.Index(got, "event:message_stop")
+	if stopIdx >= 0 && stopIdx < textIdx {
+		t.Fatalf("message_stop was emitted before visible text, got %q", got)
+	}
+}
+
 func TestNormalizeAnthropicPassthroughStreamHeadersOverridesClientJSONAccept(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
