@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // mockStreamWriter implements StreamWriter for testing.
 type mockStreamWriter struct {
+	mu      sync.Mutex
 	buffer  bytes.Buffer
 	written bool
 	headers http.Header
@@ -25,6 +27,8 @@ func newMockStreamWriter() *mockStreamWriter {
 }
 
 func (m *mockStreamWriter) Write(data []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.written = true
 	return m.buffer.Write(data)
 }
@@ -32,6 +36,8 @@ func (m *mockStreamWriter) Write(data []byte) (int, error) {
 func (m *mockStreamWriter) Flush() {}
 
 func (m *mockStreamWriter) Written() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.written
 }
 
@@ -41,8 +47,15 @@ func (m *mockStreamWriter) Header() http.Header {
 
 func (m *mockStreamWriter) WriteHeader(code int) {}
 
+func (m *mockStreamWriter) String() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.buffer.String()
+}
+
 // mockStreamSource implements StreamSource for testing.
 type mockStreamSource struct {
+	mu     sync.Mutex
 	events [][]byte
 	index  int
 	closed bool
@@ -62,8 +75,16 @@ func (m *mockStreamSource) ReadEvent(ctx context.Context) ([]byte, error) {
 }
 
 func (m *mockStreamSource) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.closed = true
 	return nil
+}
+
+func (m *mockStreamSource) isClosed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closed
 }
 
 func TestStreamProcessor_BasicFlow(t *testing.T) {
@@ -88,11 +109,11 @@ func TestStreamProcessor_BasicFlow(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !source.closed {
+	if !source.isClosed() {
 		t.Error("source not closed")
 	}
 
-	output := writer.buffer.String()
+	output := writer.String()
 	for _, event := range events {
 		if !strings.Contains(output, string(event)) {
 			t.Errorf("output missing event: %s", event)
@@ -127,7 +148,7 @@ func TestStreamProcessor_WithTransform(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := writer.buffer.String()
+	output := writer.String()
 	expected := "data: chunk1\n\ndata: chunk2\n\n"
 	if output != expected {
 		t.Errorf("unexpected output:\ngot:  %q\nwant: %q", output, expected)
