@@ -28,6 +28,7 @@ type MessagesInbound struct {
 	stopReason                *string
 	stopSequence              *string
 	toolCallIndices           map[int]bool // Track which tool call indices we've seen
+	pendingToolCalls          map[int]model.ToolCall
 	inputToken                int64
 
 	streamAggregator model.StreamAggregator
@@ -1310,6 +1311,9 @@ func (i *MessagesInbound) TransformStreamEvents(ctx context.Context, events []mo
 		return nil
 	}
 	startTool := func(toolCall model.ToolCall) error {
+		if toolCall.ID == "" || toolCall.Function.Name == "" {
+			return nil
+		}
 		if i.toolCallIndices == nil {
 			i.toolCallIndices = make(map[int]bool)
 		}
@@ -1332,6 +1336,19 @@ func (i *MessagesInbound) TransformStreamEvents(ctx context.Context, events []mo
 		}
 		out = append(out, formatSSEEvent("content_block_start", data))
 		return nil
+	}
+	mergePendingToolCall := func(delta model.ToolCall) (model.ToolCall, bool) {
+		if i.pendingToolCalls == nil {
+			i.pendingToolCalls = make(map[int]model.ToolCall)
+		}
+		pending, ok := i.pendingToolCalls[delta.Index]
+		if ok {
+			merged := model.MergeToolCallDelta([]model.ToolCall{pending}, delta)[0]
+			i.pendingToolCalls[delta.Index] = merged
+			return merged, true
+		}
+		i.pendingToolCalls[delta.Index] = delta
+		return delta, false
 	}
 
 	for _, event := range events {
@@ -1439,7 +1456,11 @@ func (i *MessagesInbound) TransformStreamEvents(ctx context.Context, events []mo
 				return nil, err
 			}
 			if event.ToolCall != nil {
-				if err := startTool(*event.ToolCall); err != nil {
+				toolCall, _ := mergePendingToolCall(*event.ToolCall)
+				if toolCall.ID == "" || toolCall.Function.Name == "" {
+					continue
+				}
+				if err := startTool(toolCall); err != nil {
 					return nil, err
 				}
 			}
@@ -1450,11 +1471,19 @@ func (i *MessagesInbound) TransformStreamEvents(ctx context.Context, events []mo
 			if event.ToolCall == nil {
 				continue
 			}
-			if err := startTool(*event.ToolCall); err != nil {
+			toolCall, existed := mergePendingToolCall(*event.ToolCall)
+			if toolCall.ID == "" || toolCall.Function.Name == "" {
+				continue
+			}
+			alreadyStarted := i.toolCallIndices != nil && i.toolCallIndices[toolCall.Index]
+			if err := startTool(toolCall); err != nil {
 				return nil, err
 			}
-			arguments := event.ToolCall.Function.Arguments
-			if event.Delta != nil && event.Delta.Arguments != "" {
+			arguments := toolCall.Function.Arguments
+			if alreadyStarted || !existed {
+				arguments = event.ToolCall.Function.Arguments
+			}
+			if alreadyStarted && event.Delta != nil && event.Delta.Arguments != "" {
 				arguments = event.Delta.Arguments
 			}
 			if arguments == "" {
