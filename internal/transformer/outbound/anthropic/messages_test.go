@@ -50,6 +50,34 @@ func TestTransformRequestRawRewritesModel(t *testing.T) {
 	}
 }
 
+func TestTransformRequestRawUsesClaudeCodeBetaBaseline(t *testing.T) {
+	outbound := &MessageOutbound{}
+	req, err := outbound.TransformRequestRaw(
+		context.Background(),
+		[]byte(`{"model":"internal-alias","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"thinking":{"type":"adaptive"}}`),
+		"claude-3-5-sonnet-20241022",
+		"https://example.com/v1",
+		"test-key",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("TransformRequestRaw() error = %v", err)
+	}
+	beta := req.Header.Get("anthropic-beta")
+	for _, want := range []string{
+		"claude-code-20250219",
+		"interleaved-thinking-2025-05-14",
+		"context-management-2025-06-27",
+		"token-efficient-tools-2026-03-28",
+		"prompt-caching-2024-07-31",
+		"extended-cache-ttl-2025-04-11",
+	} {
+		if !strings.Contains(beta, want) {
+			t.Fatalf("expected anthropic-beta to contain %q, got %q", want, beta)
+		}
+	}
+}
+
 func TestTransformRequestRawStripsEmptySignatureThinking(t *testing.T) {
 	outbound := &MessageOutbound{}
 	rawBody := []byte(`{
