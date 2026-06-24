@@ -77,9 +77,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		}
 	}
 
-	originalModel := internalRequest.Model
-	requestModel := op.ModelMappingResolve(internalRequest.Model)
-	internalRequest.Model = requestModel
+	requestModel := internalRequest.Model
 	apiKeyID := c.GetInt("api_key_id")
 
 	// 获取通道分组
@@ -118,7 +116,6 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		metrics:         metrics,
 		apiKeyID:        apiKeyID,
 		requestModel:    requestModel,
-		originalModel:   originalModel,
 		groupID:         group.ID,
 		groupSessionTTL: group.SessionKeepTime,
 		iter:            iter,
@@ -1275,11 +1272,6 @@ func (ra *relayAttempt) encodeInboundStreamEvents(ctx context.Context, events []
 	if len(events) == 0 {
 		return nil, nil
 	}
-	for i := range events {
-		if events[i].Model != "" {
-			events[i].Model = op.ModelMappingReverse(events[i].Model)
-		}
-	}
 	inEventAdapter, ok := ra.inAdapter.(model.InboundStreamEventTransformer)
 	if !ok {
 		return nil, nil
@@ -1297,7 +1289,6 @@ func (ra *relayAttempt) decodeOutboundStreamResponse(ctx context.Context, data [
 }
 
 func (ra *relayAttempt) encodeInboundStreamResponse(ctx context.Context, internalStream *model.InternalLLMResponse) ([]byte, error) {
-	internalStream.Model = op.ModelMappingReverse(internalStream.Model)
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
@@ -1313,8 +1304,6 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		log.Warnf("failed to transform response: %v", err)
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
-
-	internalResponse.Model = op.ModelMappingReverse(internalResponse.Model)
 
 	inResponse, err := ra.inAdapter.TransformResponse(ctx, internalResponse)
 	if err != nil {
@@ -1799,20 +1788,6 @@ func (ra *relayAttempt) isAnthropicPassthroughStreamRequest() bool {
 	return ra.internalRequest != nil && ra.internalRequest.Stream != nil && *ra.internalRequest.Stream
 }
 
-func (ra *relayAttempt) applyModelMappingToPassthroughChunk(chunk []byte) []byte {
-	if ra.originalModel == ra.requestModel || ra.originalModel == "" {
-		return chunk
-	}
-	actual := ra.internalRequest.Model
-	if actual == "" {
-		return chunk
-	}
-	if bytes.Contains(chunk, []byte(actual)) {
-		return bytes.ReplaceAll(chunk, []byte(actual), []byte(ra.originalModel))
-	}
-	return chunk
-}
-
 func (ra *relayAttempt) normalizeAnthropicPassthroughStreamHeaders(outboundRequest *http.Request) {
 	if outboundRequest == nil {
 		return
@@ -2118,7 +2093,6 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 				chunk = candidate
 				nativeAnthropicPending.Reset()
 			}
-			chunk = ra.applyModelMappingToPassthroughChunk(chunk)
 			_, _ = rawStream.Write(chunk)
 			if _, werr := writer.Write(chunk); werr != nil {
 				return werr
@@ -2383,7 +2357,6 @@ func (ra *relayAttempt) handleResponsePassthroughAnthropic(ctx context.Context, 
 	if contentType == "" {
 		contentType = "application/json"
 	}
-	body = ra.applyModelMappingToPassthroughChunk(body)
 	ra.c.Data(http.StatusOK, contentType, body)
 
 	// 旁路解析：复用 outbound.TransformResponse → inbound.TransformResponse 的 storedResponse
