@@ -197,6 +197,77 @@ func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIResponsesSSE(t *t
 	}
 }
 
+func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"id":"msg_split","choices":[{"index":0,"message":{"role":"assistant","content":"\n"},"finish_reason":"stop"},{"index":1,"message":{"reasoning_content":"thinking first"}},{"index":2,"message":{"content":"visible answer"}}],"object":"chat.completion","created":0,"model":"claude-opus-4.6","usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	internalReq := &transformerModel.InternalLLMRequest{
+		Model:        "claude-opus-4-6",
+		Stream:       boolPtr(true),
+		RawAPIFormat: transformerModel.APIFormatAnthropicMessage,
+	}
+	req := &relayRequest{
+		c:               c,
+		inAdapter:       inbound.Get(inbound.InboundTypeAnthropic),
+		internalRequest: internalReq,
+		metrics:         NewRelayMetrics(1, internalReq.Model, nil, internalReq),
+		apiKeyID:        1,
+		requestModel:    internalReq.Model,
+	}
+	ra := &relayAttempt{
+		relayRequest: req,
+		outAdapter:   outbound.Get(outbound.OutboundTypeAnthropic),
+	}
+
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	if err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response); err != nil {
+		t.Fatalf("handleStreamResponsePassthroughAnthropic() error = %v", err)
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, "event:message_start") || !strings.Contains(got, `"thinking":"thinking first"`) || !strings.Contains(got, `"text":"visible answer"`) {
+		t.Fatalf("expected OpenAI JSON to be converted to Anthropic SSE, got %q", got)
+	}
+	if strings.Contains(got, "chat.completion") {
+		t.Fatalf("raw OpenAI JSON leaked to Anthropic stream client: %q", got)
+	}
+}
+
+func TestNormalizeAnthropicPassthroughStreamHeadersOverridesClientJSONAccept(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("Accept", "application/json")
+	internalReq := &transformerModel.InternalLLMRequest{
+		Model:        "claude-opus-4-6",
+		RawAPIFormat: transformerModel.APIFormatAnthropicMessage,
+	}
+	req := &relayRequest{
+		c:               c,
+		internalRequest: internalReq,
+		rawBody:         []byte(`{"model":"claude-opus-4-6","stream":true,"messages":[{"role":"user","content":"hello"}],"max_tokens":16}`),
+	}
+	ra := &relayAttempt{relayRequest: req}
+	outboundReq := httptest.NewRequest(http.MethodPost, "https://example.com/v1/messages", nil)
+	outboundReq.Header.Set("Accept", "application/json")
+
+	ra.copyHeaders(outboundReq)
+	ra.normalizeAnthropicPassthroughStreamHeaders(outboundReq)
+
+	if got := outboundReq.Header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("expected stream passthrough Accept to be normalized to SSE, got %q", got)
+	}
+}
+
 func TestHandleStreamResponsePassthroughAnthropicDefersSplitOpenAIChatStop(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

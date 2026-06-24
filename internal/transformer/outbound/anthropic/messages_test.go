@@ -78,6 +78,24 @@ func TestTransformRequestRawUsesClaudeCodeBetaBaseline(t *testing.T) {
 	}
 }
 
+func TestTransformRequestRawStreamAcceptsSSE(t *testing.T) {
+	outbound := &MessageOutbound{}
+	req, err := outbound.TransformRequestRaw(
+		context.Background(),
+		[]byte(`{"model":"internal-alias","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hello"}]}`),
+		"claude-3-5-sonnet-20241022",
+		"https://example.com/v1",
+		"test-key",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("TransformRequestRaw() error = %v", err)
+	}
+	if got := req.Header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("stream raw Anthropic request must accept SSE, got %q", got)
+	}
+}
+
 func TestTransformRequestRawStripsEmptySignatureThinking(t *testing.T) {
 	outbound := &MessageOutbound{}
 	rawBody := []byte(`{
