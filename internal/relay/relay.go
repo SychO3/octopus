@@ -2081,6 +2081,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 					nativeAnthropicPending.Reset()
 					_, _ = nativeAnthropicPending.Write(candidate)
 					if isTerminal {
+						logEmptyAnthropicPassthrough("terminal_without_payload", ra, candidate)
 						return errEmptyUpstreamStream
 					}
 					continue
@@ -2755,6 +2756,49 @@ func classifyAnthropicSSEPayload(data []byte) (hasPayload bool, isTerminal bool,
 		}
 	}
 	return hasPayload, isTerminal, true, false, nil
+}
+
+func logEmptyAnthropicPassthrough(reason string, ra *relayAttempt, data []byte) {
+	events := make([]string, 0, 8)
+	pending := append([]byte(nil), data...)
+	for _, frame := range popCompleteSSEFrames(&pending) {
+		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
+		for ev, err := range sse.Read(bytes.NewReader(frame), readCfg) {
+			if err != nil {
+				events = append(events, "read_error:"+err.Error())
+				continue
+			}
+			eventType := strings.TrimSpace(ev.Type)
+			if eventType == "" {
+				eventType = eventTypeFromSSEData(ev.Data)
+			}
+			if eventType == "" {
+				eventType = "<empty>"
+			}
+			events = append(events, eventType)
+		}
+	}
+	sample := string(data)
+	if len(sample) > 600 {
+		sample = sample[:600]
+	}
+	sum := sha256.Sum256(data)
+	channelID := 0
+	channelName := ""
+	if ra != nil && ra.channel != nil {
+		channelID = ra.channel.ID
+		channelName = ra.channel.Name
+	}
+	log.Warnw(
+		"anthropic_passthrough.empty_stream_classified",
+		"reason", reason,
+		"channel_id", channelID,
+		"channel", channelName,
+		"bytes", len(data),
+		"sha256", fmt.Sprintf("%x", sum[:8]),
+		"events", strings.Join(events, ","),
+		"sample", sample,
+	)
 }
 
 func eventTypeFromSSEData(data string) string {
