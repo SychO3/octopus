@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -884,6 +885,131 @@ func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
 	}
 }
 
+func (ra *relayAttempt) logAnthropicPassthroughRequestSummary(outboundRequest *http.Request) {
+	if ra == nil || outboundRequest == nil {
+		return
+	}
+	body, err := readOutboundRequestBody(outboundRequest)
+	if err != nil {
+		log.Infof("anthropic_passthrough.request_summary channel=%q body_read_error=%q", ra.channel.Name, err.Error())
+		return
+	}
+	summary := summarizeAnthropicRequestBody(body)
+	hash := sha256.Sum256(body)
+	log.Infof(
+		"anthropic_passthrough.request_summary channel=%q url=%q body_len=%d body_sha256=%x model=%q stream=%t messages=%d tools=%d empty_signature_thinking=%d last_role=%q headers=%s",
+		ra.channel.Name,
+		outboundRequest.URL.String(),
+		len(body),
+		hash[:8],
+		summary.Model,
+		summary.Stream,
+		summary.Messages,
+		summary.Tools,
+		summary.EmptySignatureThinking,
+		summary.LastRole,
+		summarizeAnthropicForwardHeaders(outboundRequest.Header),
+	)
+}
+
+type anthropicRequestBodySummary struct {
+	Model                  string
+	Stream                 bool
+	Messages               int
+	Tools                  int
+	EmptySignatureThinking int
+	LastRole               string
+}
+
+func summarizeAnthropicRequestBody(body []byte) anthropicRequestBodySummary {
+	var payload struct {
+		Model    string `json:"model"`
+		Stream   bool   `json:"stream"`
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Tools []json.RawMessage `json:"tools"`
+	}
+	var summary anthropicRequestBodySummary
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return summary
+	}
+	summary.Model = payload.Model
+	summary.Stream = payload.Stream
+	summary.Messages = len(payload.Messages)
+	summary.Tools = len(payload.Tools)
+	if len(payload.Messages) > 0 {
+		summary.LastRole = payload.Messages[len(payload.Messages)-1].Role
+	}
+	for _, msg := range payload.Messages {
+		summary.EmptySignatureThinking += countEmptySignatureThinkingBlocks(msg.Content)
+	}
+	return summary
+}
+
+func countEmptySignatureThinkingBlocks(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var blocks []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return 0
+	}
+	count := 0
+	for _, block := range blocks {
+		var typ string
+		if err := json.Unmarshal(block["type"], &typ); err != nil || typ != "thinking" {
+			continue
+		}
+		signatureRaw, ok := block["signature"]
+		if !ok {
+			continue
+		}
+		var signature string
+		if err := json.Unmarshal(signatureRaw, &signature); err == nil && strings.TrimSpace(signature) == "" {
+			count++
+		}
+	}
+	return count
+}
+
+func summarizeAnthropicForwardHeaders(headers http.Header) string {
+	if headers == nil {
+		return "{}"
+	}
+	keys := []string{
+		"Accept",
+		"Content-Type",
+		"Anthropic-Version",
+		"Anthropic-Beta",
+		"User-Agent",
+		"X-App",
+		"X-Stainless-Runtime",
+		"X-Stainless-Lang",
+		"X-Stainless-Package-Version",
+		"X-Stainless-Runtime-Version",
+		"X-Stainless-Os",
+		"X-Stainless-Arch",
+		"X-Stainless-Retry-Count",
+		"X-Stainless-Timeout",
+	}
+	values := make(map[string]string, len(keys)+3)
+	for _, key := range keys {
+		if value := strings.TrimSpace(headers.Get(key)); value != "" {
+			values[key] = value
+		}
+	}
+	values["has_x_api_key"] = fmt.Sprintf("%t", strings.TrimSpace(headers.Get("X-API-Key")) != "")
+	values["has_authorization"] = fmt.Sprintf("%t", strings.TrimSpace(headers.Get("Authorization")) != "")
+	values["has_x_claude_code_session_id"] = fmt.Sprintf("%t", strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")) != "")
+	b, err := json.Marshal(values)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 // mergeBetaHeader 合并两个逗号分隔的 anthropic-beta 字段值，去重并保留先后顺序。
 func mergeBetaHeader(existing, incoming string) string {
 	seen := make(map[string]struct{}, 8)
@@ -1605,13 +1731,13 @@ func (ra *relayAttempt) forwardViaHTTPPassthroughAnthropic(ctx context.Context) 
 	// user-agent / x-stainless-* 等原样透传）
 	ra.copyHeaders(outboundRequest)
 	impersonate.ApplyClientHeaders(outboundRequest, ra.channel, ra.internalRequest.Model)
-	log.Infof("🔍 [DEBUG] Channel=%s URL=%s User-Agent=%s", ra.channel.Name, outboundRequest.URL.String(), outboundRequest.Header.Get("User-Agent"))
 	// CustomHeader 优先级最高，在模拟之后再覆盖
 	if len(ra.channel.CustomHeader) > 0 {
 		for _, header := range ra.channel.CustomHeader {
 			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
 		}
 	}
+	ra.logAnthropicPassthroughRequestSummary(outboundRequest)
 
 	// 发送请求
 	response, err := ra.sendRequest(outboundRequest)
