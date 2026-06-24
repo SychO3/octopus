@@ -1602,6 +1602,35 @@ func TestRelayMetricsUsesResponseModelForCostLookup(t *testing.T) {
 	}
 }
 
+func TestRelayMetricsNormalizesProviderPrefixedResponseModelForCostLookup(t *testing.T) {
+	metrics := NewRelayMetrics(0, "claude-opus-4-6", nil, &transformerModel.InternalLLMRequest{Model: "claude-opus-4-6"})
+	metrics.StartTime = time.Now()
+
+	metrics.SetInternalResponse(&transformerModel.InternalLLMResponse{
+		Model: "kr/claude-opus-4.6",
+		Usage: &transformerModel.Usage{
+			PromptTokens:     0,
+			CompletionTokens: 212,
+			PromptTokensDetails: &transformerModel.PromptTokensDetails{
+				CachedTokens: 51687,
+			},
+		},
+	}, "kr/claude-opus-4.6")
+
+	if metrics.ActualModel != "kr/claude-opus-4.6" {
+		t.Fatalf("expected actual model to preserve upstream model, got %q", metrics.ActualModel)
+	}
+	if metrics.CacheReadTokens == nil || *metrics.CacheReadTokens != 51687 {
+		t.Fatalf("expected cache read tokens from usage, got %#v", metrics.CacheReadTokens)
+	}
+	if metrics.Stats.InputCost <= 0 {
+		t.Fatalf("expected input cost to be computed from normalized model price, got %f", metrics.Stats.InputCost)
+	}
+	if metrics.Stats.OutputCost <= 0 {
+		t.Fatalf("expected output cost to be computed from normalized model price, got %f", metrics.Stats.OutputCost)
+	}
+}
+
 func TestRelayMetricsCapturesOpenAICompatibleInputBreakdown(t *testing.T) {
 	metrics := NewRelayMetrics(0, "alias-model", nil, &transformerModel.InternalLLMRequest{Model: "alias-model"})
 	payload := []byte(`{"model":"gpt-4o-mini","input":"hello world"}`)
