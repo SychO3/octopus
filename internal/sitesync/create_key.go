@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/utils/log"
 )
 
 func CreateAccountToken(ctx context.Context, accountID int, req model.SiteChannelKeyCreateRequest) (*model.SiteSyncResult, error) {
@@ -53,6 +54,7 @@ func createManagementPlatformToken(ctx context.Context, siteRecord *model.Site, 
 
 	accessToken, err := resolveManagedAccessToken(ctx, siteRecord, account)
 	if err != nil {
+		log.Errorf("failed to resolve access token for site %s account %d: %v", siteRecord.Name, account.ID, err)
 		return err
 	}
 
@@ -66,10 +68,13 @@ func createManagementPlatformToken(ctx context.Context, siteRecord *model.Site, 
 		account,
 	)
 	if err != nil {
+		log.Errorf("failed to create token for site %s account %d group %s: %v", siteRecord.Name, account.ID, groupKey, err)
 		return err
 	}
 	if !siteTokenCreateSucceeded(payload) {
-		return fmt.Errorf("%s", firstNonEmptyString(extractSiteResponseMessage(payload), "site token creation failed"))
+		msg := firstNonEmptyString(extractSiteResponseMessage(payload), "site token creation failed")
+		log.Errorf("site token creation failed for site %s account %d group %s: %s", siteRecord.Name, account.ID, groupKey, msg)
+		return fmt.Errorf("%s", msg)
 	}
 	return nil
 }
