@@ -2393,6 +2393,9 @@ func convertOpenAIResponseToAnthropic(ctx context.Context, body []byte, response
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to render converted Anthropic response: %w", err)
 	}
+	if anthropicMessageJSONIsEmptyStop(converted) {
+		return nil, true, errEmptyUpstreamStream
+	}
 	return converted, true, nil
 }
 

@@ -179,6 +179,42 @@ func TestPassthroughAnthropicConvertedOpenAIJSONEmptyAssistantStopFailsBeforeWri
 	}
 }
 
+func TestPassthroughAnthropicNonStreamOpenAIJSONEmptyAssistantStopFailsBeforeWrite(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	body := `{"id":"","choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"}],"object":"chat.completion","created":0,"model":"","usage":{"prompt_tokens":54810,"completion_tokens":1,"total_tokens":54811,"prompt_tokens_details":null,"completion_tokens_details":null}}`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	err := ra.handleResponsePassthroughAnthropic(context.Background(), response)
+	if !errors.Is(err, errEmptyUpstreamStream) {
+		t.Fatalf("expected errEmptyUpstreamStream for non-stream empty OpenAI JSON fallback, got %v", err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
+
+func TestPassthroughAnthropicConvertedOpenAISSEFullCompletionEmptyAssistantStopFailsBeforeWrite(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	body := strings.Join([]string{
+		`data: {"id":"","choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"}],"object":"chat.completion","created":0,"model":"","usage":{"prompt_tokens":54810,"completion_tokens":1,"total_tokens":54811,"prompt_tokens_details":null,"completion_tokens_details":null}}`,
+		"",
+	}, "\n")
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseTestResponse(body))
+	if !errors.Is(err, errEmptyUpstreamStream) {
+		t.Fatalf("expected errEmptyUpstreamStream for empty OpenAI full-completion SSE, got %v", err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
+
 func TestPassthroughAnthropicNativeEmptyAssistantStopFailsBeforeWrite(t *testing.T) {
 	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
 
@@ -197,6 +233,57 @@ func TestPassthroughAnthropicNativeEmptyAssistantStopFailsBeforeWrite(t *testing
 	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseTestResponse(body))
 	if !errors.Is(err, errEmptyUpstreamStream) {
 		t.Fatalf("expected errEmptyUpstreamStream for native empty assistant stop, got %v", err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
+
+func TestPassthroughAnthropicNativeEmptyAssistantUsageDeltaStopFailsBeforeWrite(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	body := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"","type":"message","role":"assistant","content":[],"model":"","usage":{"input_tokens":54810,"output_tokens":1}}}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":54810,"output_tokens":1}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseTestResponse(body))
+	if !errors.Is(err, errEmptyUpstreamStream) {
+		t.Fatalf("expected errEmptyUpstreamStream for native empty usage delta stop, got %v", err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
+
+func TestPassthroughAnthropicNativeRepeatedEmptyAssistantFailsBeforeWrite(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	body := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_empty_1","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","usage":{"input_tokens":14939,"output_tokens":0}}}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":null,"stop_sequence":null},"usage":{"input_tokens":14939,"output_tokens":0}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"","type":"message","role":"assistant","content":[],"model":"","usage":{"input_tokens":29625,"output_tokens":1}}}`,
+		"",
+	}, "\n")
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseTestResponse(body))
+	if !errors.Is(err, errEmptyUpstreamStream) {
+		t.Fatalf("expected errEmptyUpstreamStream for repeated native empty assistant events, got %v", err)
 	}
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
