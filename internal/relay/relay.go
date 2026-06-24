@@ -2078,13 +2078,17 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 					continue
 				}
 				if !hasPayload && !passthrough {
-					nativeAnthropicPending.Reset()
-					_, _ = nativeAnthropicPending.Write(candidate)
-					if isTerminal {
+					if isTerminal && rawStream.Len() == 0 {
+						nativeAnthropicPending.Reset()
+						_, _ = nativeAnthropicPending.Write(candidate)
 						logEmptyAnthropicPassthrough("terminal_without_payload", ra, candidate)
 						return errEmptyUpstreamStream
 					}
-					continue
+					if !isTerminal {
+						nativeAnthropicPending.Reset()
+						_, _ = nativeAnthropicPending.Write(candidate)
+						continue
+					}
 				}
 				chunk = candidate
 				nativeAnthropicPending.Reset()

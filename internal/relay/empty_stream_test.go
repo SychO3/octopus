@@ -55,6 +55,33 @@ func sseTestResponse(body string) *http.Response {
 	}
 }
 
+type chunkedReadCloser struct {
+	chunks [][]byte
+}
+
+func (r *chunkedReadCloser) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := r.chunks[0]
+	r.chunks = r.chunks[1:]
+	return copy(p, chunk), nil
+}
+
+func (r *chunkedReadCloser) Close() error { return nil }
+
+func sseChunkedTestResponse(chunks ...string) *http.Response {
+	body := &chunkedReadCloser{chunks: make([][]byte, 0, len(chunks))}
+	for _, chunk := range chunks {
+		body.chunks = append(body.chunks, []byte(chunk))
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+}
+
 func TestHandleStreamResponseEmptyStreamFails(t *testing.T) {
 	ra, _ := newEmptyStreamTestAttempt(t, inbound.InboundTypeOpenAIChat, transformerModel.APIFormatOpenAIChatCompletion, outbound.OutboundTypeOpenAIResponse)
 
@@ -249,6 +276,47 @@ func TestPassthroughAnthropicNativeEmptyAssistantStopFailsBeforeWrite(t *testing
 	}
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
+
+func TestPassthroughAnthropicNativeTerminalChunkAfterPayloadIsForwarded(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	first := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+		"",
+		"",
+	}, "\n")
+	second := strings.Join([]string{
+		"event: content_block_stop",
+		`data: {"type":"content_block_stop","index":0}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":1,"output_tokens":1}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+		"",
+	}, "\n")
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseChunkedTestResponse(first, second))
+	if err != nil {
+		t.Fatalf("expected terminal chunk after payload to succeed, got %v", err)
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"text":"hello"`) {
+		t.Fatalf("expected text delta forwarded, got %q", got)
+	}
+	if !strings.Contains(got, `event: message_stop`) {
+		t.Fatalf("expected terminal message_stop forwarded, got %q", got)
 	}
 }
 
