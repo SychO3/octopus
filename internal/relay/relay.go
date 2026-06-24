@@ -2137,7 +2137,24 @@ func (ra *relayAttempt) convertOpenAIJSONToAnthropicSSE(ctx context.Context, bod
 	if err != nil {
 		return nil, fmt.Errorf("failed to render converted Anthropic JSON fallback: %w", err)
 	}
+	if anthropicMessageJSONIsEmptyStop(rendered) {
+		return nil, errEmptyUpstreamStream
+	}
 	return anthropicMessageJSONToSSE(rendered)
+}
+
+func anthropicMessageJSONIsEmptyStop(body []byte) bool {
+	var msg struct {
+		Type    string            `json:"type"`
+		Content []json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return false
+	}
+	if msg.Type != "" && msg.Type != "message" {
+		return false
+	}
+	return len(msg.Content) == 0
 }
 
 func anthropicMessageJSONToSSE(body []byte) ([]byte, error) {

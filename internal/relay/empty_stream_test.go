@@ -160,6 +160,25 @@ func TestPassthroughAnthropicConvertedOpenAIControlOnlyStreamFailsBeforeWrite(t 
 	}
 }
 
+func TestPassthroughAnthropicConvertedOpenAIJSONEmptyAssistantStopFailsBeforeWrite(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	body := `{"id":"","choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"}],"object":"chat.completion","created":0,"model":"","usage":{"prompt_tokens":29625,"completion_tokens":1,"total_tokens":29626,"prompt_tokens_details":null,"completion_tokens_details":null}}`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response)
+	if !errors.Is(err, errEmptyUpstreamStream) {
+		t.Fatalf("expected errEmptyUpstreamStream for empty OpenAI JSON fallback, got %v", err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
+
 func TestPassthroughAnthropicNativeEmptyAssistantStopFailsBeforeWrite(t *testing.T) {
 	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
 
