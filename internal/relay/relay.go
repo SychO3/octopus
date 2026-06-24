@@ -1923,6 +1923,9 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 		if openAIProtocol != "openai_chat" || inboundStream == nil {
 			return nil
 		}
+		if openAIChatTerminalIsEmptyStop(&openAIChatTerminal) {
+			return errEmptyUpstreamStream
+		}
 		events := flushOpenAIChatTerminalEvents(&openAIChatTerminal)
 		if len(events) == 0 {
 			return nil
@@ -1933,6 +1936,9 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 		}
 		if len(converted) == 0 {
 			return nil
+		}
+		if rawStream.Len() == 0 && isEmptyAnthropicAssistantStopSSE(converted) {
+			return errEmptyUpstreamStream
 		}
 		_, _ = rawStream.Write(converted)
 		if _, werr := writer.Write(converted); werr != nil {
@@ -2356,17 +2362,40 @@ func mergeSplitOpenAIChatChoices(response *model.InternalLLMResponse) {
 	}
 
 	merged := response.Choices[0]
-	if merged.Message == nil {
-		merged.Message = &model.Message{Role: "assistant"}
+	useDelta := false
+	for _, choice := range response.Choices {
+		if choice.Delta != nil {
+			useDelta = true
+			break
+		}
 	}
-	if merged.Message.Role == "" {
-		merged.Message.Role = "assistant"
+	if useDelta {
+		if merged.Delta == nil {
+			merged.Delta = &model.Message{Role: "assistant"}
+		}
+		if merged.Delta.Role == "" {
+			merged.Delta.Role = "assistant"
+		}
+		trimOpenAIChatLeadingWhitespaceContent(merged.Delta)
+	} else {
+		if merged.Message == nil {
+			merged.Message = &model.Message{Role: "assistant"}
+		}
+		if merged.Message.Role == "" {
+			merged.Message.Role = "assistant"
+		}
 	}
 
 	for idx := 1; idx < len(response.Choices); idx++ {
 		choice := response.Choices[idx]
-		if choice.Message != nil {
-			mergeOpenAIChatMessage(merged.Message, choice.Message)
+		src := choice.Message
+		if src == nil {
+			src = choice.Delta
+		}
+		if useDelta {
+			mergeOpenAIChatMessage(merged.Delta, src)
+		} else {
+			mergeOpenAIChatMessage(merged.Message, src)
 		}
 		if merged.FinishReason == nil && choice.FinishReason != nil {
 			merged.FinishReason = choice.FinishReason
@@ -2374,6 +2403,13 @@ func mergeSplitOpenAIChatChoices(response *model.InternalLLMResponse) {
 	}
 
 	response.Choices = []model.Choice{merged}
+}
+
+func trimOpenAIChatLeadingWhitespaceContent(msg *model.Message) {
+	if msg == nil || msg.Content.Content == nil || strings.TrimSpace(*msg.Content.Content) != "" {
+		return
+	}
+	*msg.Content.Content = ""
 }
 
 func mergeOpenAIChatMessage(dst, src *model.Message) {
@@ -2476,14 +2512,58 @@ func convertOpenAIStreamChunkToAnthropic(
 }
 
 type openAIChatTerminalState struct {
-	stop  *model.StreamEvent
-	usage *model.StreamEvent
-	done  bool
+	stop              *model.StreamEvent
+	usage             *model.StreamEvent
+	done              bool
+	leadingWhitespace []model.StreamEvent
+	pendingStart      *model.StreamEvent
 }
 
 func deferOpenAIChatTerminalEvents(events []model.StreamEvent, terminal *openAIChatTerminalState) []model.StreamEvent {
 	if terminal == nil || len(events) == 0 {
 		return events
+	}
+	if openAIChatEventsAreTerminalWithoutPayload(events) {
+		for _, event := range events {
+			switch event.Kind {
+			case model.StreamEventKindMessageStart:
+				ev := event
+				terminal.pendingStart = &ev
+			case model.StreamEventKindMessageStop:
+				ev := event
+				terminal.stop = &ev
+			case model.StreamEventKindUsageDelta:
+				ev := event
+				terminal.usage = &ev
+			case model.StreamEventKindDone:
+				terminal.done = true
+			}
+		}
+		return nil
+	}
+	if openAIChatEventsAreOnlyMessageStart(events) {
+		ev := events[0]
+		terminal.pendingStart = &ev
+		return nil
+	}
+	if terminal.pendingStart != nil {
+		if openAIChatEventsHaveSubstantivePayload(events) || openAIChatEventsAreWhitespaceTerminal(events) {
+			events = append([]model.StreamEvent{*terminal.pendingStart}, events...)
+			terminal.pendingStart = nil
+		}
+	}
+	if len(terminal.leadingWhitespace) > 0 {
+		if openAIChatEventsHaveSubstantivePayload(events) {
+			terminal.leadingWhitespace = nil
+		} else {
+			held := append([]model.StreamEvent(nil), terminal.leadingWhitespace...)
+			terminal.leadingWhitespace = nil
+			events = append(held, events...)
+		}
+	}
+	if openAIChatEventsAreWhitespaceTerminal(events) {
+		terminal.leadingWhitespace = append([]model.StreamEvent(nil), events...)
+		return nil
 	}
 	filtered := events[:0]
 	for _, event := range events {
@@ -2505,9 +2585,23 @@ func deferOpenAIChatTerminalEvents(events []model.StreamEvent, terminal *openAIC
 
 func flushOpenAIChatTerminalEvents(terminal *openAIChatTerminalState) []model.StreamEvent {
 	if terminal == nil || terminal.stop == nil {
+		if terminal != nil && len(terminal.leadingWhitespace) > 0 {
+			events := terminal.leadingWhitespace
+			terminal.leadingWhitespace = nil
+			return events
+		}
 		return nil
 	}
-	events := []model.StreamEvent{*terminal.stop}
+	events := make([]model.StreamEvent, 0, len(terminal.leadingWhitespace)+2)
+	if terminal.pendingStart != nil {
+		events = append(events, *terminal.pendingStart)
+		terminal.pendingStart = nil
+	}
+	if len(terminal.leadingWhitespace) > 0 {
+		events = append(events, terminal.leadingWhitespace...)
+		terminal.leadingWhitespace = nil
+	}
+	events = append(events, *terminal.stop)
 	if terminal.usage != nil {
 		events = append(events, *terminal.usage)
 	} else if terminal.done {
@@ -2517,6 +2611,103 @@ func flushOpenAIChatTerminalEvents(terminal *openAIChatTerminalState) []model.St
 	terminal.usage = nil
 	terminal.done = false
 	return events
+}
+
+func openAIChatTerminalIsEmptyStop(terminal *openAIChatTerminalState) bool {
+	return terminal != nil && terminal.stop != nil && terminal.pendingStart != nil && len(terminal.leadingWhitespace) == 0
+}
+
+func isEmptyAnthropicAssistantStopSSE(data []byte) bool {
+	if len(data) == 0 || bytes.Contains(data, []byte(`"type":"content_block_delta"`)) {
+		return false
+	}
+	hasMessageStart := false
+	hasMessageStop := false
+	readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
+	for ev, err := range sse.Read(bytes.NewReader(data), readCfg) {
+		if err != nil {
+			return false
+		}
+		var event struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &event); err != nil {
+			return false
+		}
+		switch event.Type {
+		case "message_start":
+			hasMessageStart = true
+		case "message_delta":
+		case "message_stop":
+			hasMessageStop = true
+		default:
+			return false
+		}
+	}
+	return hasMessageStart && hasMessageStop
+}
+
+func openAIChatEventsAreOnlyMessageStart(events []model.StreamEvent) bool {
+	if len(events) != 1 {
+		return false
+	}
+	return events[0].Kind == model.StreamEventKindMessageStart
+}
+
+func openAIChatEventsAreTerminalWithoutPayload(events []model.StreamEvent) bool {
+	if len(events) == 0 || openAIChatEventsHaveSubstantivePayload(events) {
+		return false
+	}
+	hasStop := false
+	for _, event := range events {
+		switch event.Kind {
+		case model.StreamEventKindMessageStart, model.StreamEventKindUsageDelta, model.StreamEventKindDone:
+		case model.StreamEventKindMessageStop:
+			hasStop = true
+		default:
+			return false
+		}
+	}
+	return hasStop
+}
+
+func openAIChatEventsAreWhitespaceTerminal(events []model.StreamEvent) bool {
+	if len(events) == 0 {
+		return false
+	}
+	hasWhitespaceText := false
+	hasStop := false
+	for _, event := range events {
+		switch event.Kind {
+		case model.StreamEventKindTextDelta:
+			if event.Delta == nil || strings.TrimSpace(event.Delta.Text) != "" || event.Delta.Refusal != "" {
+				return false
+			}
+			hasWhitespaceText = true
+		case model.StreamEventKindMessageStart:
+		case model.StreamEventKindMessageStop:
+			hasStop = true
+		case model.StreamEventKindUsageDelta, model.StreamEventKindDone:
+		default:
+			return false
+		}
+	}
+	return hasWhitespaceText && hasStop
+}
+
+func openAIChatEventsHaveSubstantivePayload(events []model.StreamEvent) bool {
+	for _, event := range events {
+		switch event.Kind {
+		case model.StreamEventKindTextDelta:
+			if event.Delta != nil && (strings.TrimSpace(event.Delta.Text) != "" || event.Delta.Refusal != "") {
+				return true
+			}
+		case model.StreamEventKindThinkingDelta, model.StreamEventKindSignatureDelta,
+			model.StreamEventKindContentBlockStart, model.StreamEventKindToolCallStart, model.StreamEventKindToolCallDelta:
+			return true
+		}
+	}
+	return false
 }
 
 func popCompleteSSEFrames(pending *[]byte) [][]byte {
@@ -2570,6 +2761,14 @@ func convertOpenAIStreamFrame(ctx context.Context, frame []byte, outAdapter mode
 	data := firstSSEData(frame)
 	if len(data) == 0 {
 		return nil, nil
+	}
+	if chat, ok := outAdapter.(*openaiOutbound.ChatOutbound); ok {
+		stream, err := chat.TransformStream(ctx, data)
+		if err != nil {
+			return nil, err
+		}
+		mergeSplitOpenAIChatChoices(stream)
+		return model.StreamEventsFromInternalResponse(stream), nil
 	}
 	return outAdapter.TransformStreamEvent(ctx, data)
 }

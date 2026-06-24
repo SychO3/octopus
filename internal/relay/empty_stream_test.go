@@ -120,3 +120,21 @@ func TestPassthroughAnthropicEmptyStreamFails(t *testing.T) {
 		t.Fatalf("expected errEmptyUpstreamStream for empty passthrough stream, got %v", err)
 	}
 }
+
+func TestPassthroughAnthropicConvertedOpenAIEmptyAssistantStopFailsBeforeWrite(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	body := strings.Join([]string{
+		`data: {"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":29618,"completion_tokens":1,"total_tokens":29619}}`,
+		"",
+		"",
+	}, "\n")
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseTestResponse(body))
+	if !errors.Is(err, errEmptyUpstreamStream) {
+		t.Fatalf("expected errEmptyUpstreamStream for empty assistant stop, got %v", err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
