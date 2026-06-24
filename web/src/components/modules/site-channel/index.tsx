@@ -1100,7 +1100,10 @@ function SiteChannelTableView({
                                     </div>
                                 </TableCell>
                                 <TableCell className={compactMode ? 'py-2' : undefined}>
-                                    <div className="max-w-[14rem] truncate text-sm">{model.group_name || model.group_key}</div>
+                                    <div className="max-w-[14rem] truncate text-sm">
+                                        {model.group_name || model.group_key}
+                                        {model.group_ratio ? <span className="ml-1 text-muted-foreground">&times;{model.group_ratio}</span> : null}
+                                    </div>
                                 </TableCell>
                                 <TableCell className={compactMode ? 'py-2' : undefined}>
                                     <div className="flex flex-wrap gap-1.5">
