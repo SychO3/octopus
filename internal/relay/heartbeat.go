@@ -181,3 +181,14 @@ func (h *earlyHeartbeat) FlushOrError(c *gin.Context, statusCode int, message st
 	}
 	resp.Error(c, statusCode, message)
 }
+
+func (h *earlyHeartbeat) FlushSSEOrError(c *gin.Context, statusCode int, message string) {
+	if h != nil && h.c != nil {
+		h.mu.Lock()
+		h.writeSSEHeaderLocked()
+		h.mu.Unlock()
+		h.WriteSSEError(statusCode, message)
+		return
+	}
+	resp.Error(c, statusCode, message)
+}

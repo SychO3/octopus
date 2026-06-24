@@ -222,6 +222,28 @@ func TestEarlyHeartbeat_FlushOrError_JSONPath(t *testing.T) {
 	}
 }
 
+func TestFlushRelayFailure_StreamForcesSSEError(t *testing.T) {
+	setupRelayTestDB(t)
+	setHeartbeatSettings(t, "1", "0")
+
+	c, w := newTestGinContext(t)
+	hb := startEarlyHeartbeat(c, true)
+	defer hb.Stop()
+
+	flushRelayFailure(c, hb, true, http.StatusBadGateway, "channel failed")
+
+	body := w.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("stream failure should produce SSE error event, got %q", body)
+	}
+	if !strings.Contains(body, `"code":502`) {
+		t.Fatalf("expected status code in SSE error payload, got %q", body)
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("expected SSE Content-Type, got %q", got)
+	}
+}
+
 func TestEarlyHeartbeat_NilSafe(t *testing.T) {
 	var hb *earlyHeartbeat
 	hb.Hand()
