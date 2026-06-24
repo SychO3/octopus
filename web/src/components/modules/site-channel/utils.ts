@@ -48,6 +48,7 @@ export type SiteChannelGroupFilter =
 export type SiteModelView = SiteChannelModel & {
     group_key: string;
     group_name: string;
+    group_ratio: number;
     key_count: number;
     enabled_key_count: number;
     has_keys: boolean;
@@ -145,6 +146,7 @@ export function flattenAccountModels(
             ...model,
             group_key: group.group_key,
             group_name: group.group_name,
+            group_ratio: group.group_ratio,
             key_count: group.key_count,
             enabled_key_count: group.enabled_key_count,
             has_keys: group.has_keys,
