@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/server/middleware"
@@ -287,11 +288,23 @@ func streamLog(c *gin.Context) {
 	defer op.RelayLogUnsubscribe(logChan)
 
 	ctx := c.Request.Context()
+	if _, err := c.Writer.Write([]byte(": connected\n\n")); err != nil {
+		return
+	}
+	c.Writer.Flush()
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			if _, err := c.Writer.Write([]byte(": heartbeat\n\n")); err != nil {
+				return
+			}
+			c.Writer.Flush()
 		case log, ok := <-logChan:
 			if !ok {
 				return
