@@ -121,6 +121,19 @@ func TestPassthroughAnthropicEmptyStreamFails(t *testing.T) {
 	}
 }
 
+func TestPassthroughAnthropicEmptyStreamFailsEvenAfterPriorAttemptWrote(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+	ra.streamPayloadWritten.Store(true)
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseTestResponse(""))
+	if !errors.Is(err, errEmptyUpstreamStream) {
+		t.Fatalf("expected errEmptyUpstreamStream despite prior written flag, got %v", err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected nothing forwarded to client, got %q", recorder.Body.String())
+	}
+}
+
 func TestPassthroughAnthropicConvertedOpenAIEmptyAssistantStopFailsBeforeWrite(t *testing.T) {
 	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
 

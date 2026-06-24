@@ -1954,7 +1954,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 		if err := flushOpenAIChatTerminal(); err != nil {
 			return err
 		}
-		if !ra.streamPayloadWritten.Load() {
+		if rawStream.Len() == 0 {
 			return errEmptyUpstreamStream
 		}
 		ra.collectAnthropicPassthroughMetrics(c, rawStream.Bytes())
