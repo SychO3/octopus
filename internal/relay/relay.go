@@ -2564,6 +2564,21 @@ func deferOpenAIChatTerminalEvents(events []model.StreamEvent, terminal *openAIC
 		}
 		return nil
 	}
+	if openAIChatEventsAreControlWithoutPayload(events) {
+		for _, event := range events {
+			switch event.Kind {
+			case model.StreamEventKindMessageStart:
+				ev := event
+				terminal.pendingStart = &ev
+			case model.StreamEventKindUsageDelta:
+				ev := event
+				terminal.usage = &ev
+			case model.StreamEventKindDone:
+				terminal.done = true
+			}
+		}
+		return nil
+	}
 	if openAIChatEventsAreOnlyMessageStart(events) {
 		ev := events[0]
 		terminal.pendingStart = &ev
@@ -2782,6 +2797,22 @@ func openAIChatEventsAreTerminalWithoutPayload(events []model.StreamEvent) bool 
 		}
 	}
 	return hasStop
+}
+
+func openAIChatEventsAreControlWithoutPayload(events []model.StreamEvent) bool {
+	if len(events) == 0 || openAIChatEventsHaveSubstantivePayload(events) {
+		return false
+	}
+	hasControl := false
+	for _, event := range events {
+		switch event.Kind {
+		case model.StreamEventKindMessageStart, model.StreamEventKindUsageDelta, model.StreamEventKindDone:
+			hasControl = true
+		default:
+			return false
+		}
+	}
+	return hasControl
 }
 
 func openAIChatEventsAreWhitespaceTerminal(events []model.StreamEvent) bool {
