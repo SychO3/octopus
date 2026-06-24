@@ -29,10 +29,11 @@ type MessageOutbound struct {
 	initialized bool
 }
 
-// DefaultAnthropicPassthroughBeta 是 Anthropic→Anthropic 直通路径在未从客户端收到
-// 显式 anthropic-beta 时写入的默认基线；同时作为 copyHeaders 合并客户端值时的基线。
-// 取这两个主要是为了让扩展缓存 TTL（1h）以及新版缓存作用域稳定生效。
-const DefaultAnthropicPassthroughBeta = "prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11"
+// DefaultAnthropicPassthroughBeta 是 Anthropic→Anthropic 直通路径的 Claude Code
+// beta 基线。上游兼容站点通常依赖这些特性位来正确处理 Claude Code 的工具、
+// thinking/context-management 语义；copyHeaders 会把客户端显式 anthropic-beta 与
+// 这组基线合并去重。
+const DefaultAnthropicPassthroughBeta = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28"
 
 func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
 	if request == nil {
