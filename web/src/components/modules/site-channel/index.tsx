@@ -2194,7 +2194,7 @@ function SiteAccountPanel({
                                                 </Button>
                                             ))}
                                         </div>
-                                        {pendingKeyGroups.length > 1 && (
+                                        {pendingKeyGroups.length >= 1 && (
                                             <Button
                                                 type="button"
                                                 variant="outline"
