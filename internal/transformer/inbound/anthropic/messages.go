@@ -534,6 +534,7 @@ func convertDocumentBlockToLLM(block MessageContentBlock) *model.MessageContentP
 }
 
 func (i *MessagesInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {
+	response = mergeSplitChoicesForAnthropic(response)
 	// Store the response for later retrieval
 	i.storedResponse = response
 
@@ -768,6 +769,7 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 		}
 		return nil, nil
 	}
+	stream = mergeSplitChoicesForAnthropic(stream)
 
 	// Store the chunk for aggregation
 	i.streamAggregator.Add(stream)
@@ -1212,6 +1214,137 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 	}
 
 	return joinSSEEvents(events), nil
+}
+
+func mergeSplitChoicesForAnthropic(response *model.InternalLLMResponse) *model.InternalLLMResponse {
+	if response == nil || len(response.Choices) <= 1 {
+		return response
+	}
+	hasLaterPayload := false
+	for idx := 1; idx < len(response.Choices); idx++ {
+		if choiceHasSubstantivePayload(response.Choices[idx]) {
+			hasLaterPayload = true
+			break
+		}
+	}
+	if !hasLaterPayload {
+		return response
+	}
+
+	terminalBeforePayload := false
+	for idx := 0; idx < len(response.Choices)-1; idx++ {
+		if response.Choices[idx].FinishReason != nil {
+			terminalBeforePayload = true
+			break
+		}
+	}
+	if !terminalBeforePayload && choiceHasSubstantivePayload(response.Choices[0]) {
+		return response
+	}
+
+	merged := response.Choices[0]
+	useDelta := false
+	for _, choice := range response.Choices {
+		if choice.Delta != nil {
+			useDelta = true
+			break
+		}
+	}
+	dst := &model.Message{Role: "assistant"}
+	if useDelta {
+		merged.Delta = dst
+		merged.Message = nil
+	} else {
+		merged.Message = dst
+		merged.Delta = nil
+	}
+	for _, choice := range response.Choices {
+		src := choice.Message
+		if src == nil {
+			src = choice.Delta
+		}
+		mergeAnthropicMessage(dst, src)
+		if merged.FinishReason == nil && choice.FinishReason != nil {
+			merged.FinishReason = choice.FinishReason
+		}
+		if merged.StopSequence == nil && choice.StopSequence != nil {
+			merged.StopSequence = choice.StopSequence
+		}
+	}
+
+	clone := *response
+	clone.Choices = []model.Choice{merged}
+	return &clone
+}
+
+func choiceHasSubstantivePayload(choice model.Choice) bool {
+	msg := choice.Message
+	if msg == nil {
+		msg = choice.Delta
+	}
+	if msg == nil {
+		return false
+	}
+	if strings.TrimSpace(msg.GetReasoningContent()) != "" ||
+		strings.TrimSpace(msg.Refusal) != "" ||
+		len(msg.ReasoningBlocks) > 0 ||
+		len(msg.RedactedThinkingBlocks) > 0 ||
+		len(msg.ToolCalls) > 0 ||
+		len(msg.Images) > 0 {
+		return true
+	}
+	if msg.Content.Content != nil && strings.TrimSpace(*msg.Content.Content) != "" {
+		return true
+	}
+	return len(msg.Content.MultipleContent) > 0
+}
+
+func mergeAnthropicMessage(dst, src *model.Message) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.Role == "" {
+		dst.Role = src.Role
+	}
+	if src.ReasoningContent != nil && strings.TrimSpace(*src.ReasoningContent) != "" {
+		if dst.ReasoningContent == nil {
+			dst.ReasoningContent = lo.ToPtr("")
+		}
+		*dst.ReasoningContent += *src.ReasoningContent
+	}
+	if src.Reasoning != nil && strings.TrimSpace(*src.Reasoning) != "" {
+		if dst.Reasoning == nil {
+			dst.Reasoning = lo.ToPtr("")
+		}
+		*dst.Reasoning += *src.Reasoning
+	}
+	if src.ReasoningSignature != nil && strings.TrimSpace(*src.ReasoningSignature) != "" && dst.ReasoningSignature == nil {
+		dst.ReasoningSignature = src.ReasoningSignature
+	}
+	if len(src.ReasoningBlocks) > 0 {
+		dst.ReasoningBlocks = append(dst.ReasoningBlocks, src.ReasoningBlocks...)
+	}
+	if len(src.RedactedThinkingBlocks) > 0 {
+		dst.RedactedThinkingBlocks = append(dst.RedactedThinkingBlocks, src.RedactedThinkingBlocks...)
+	}
+	if src.Content.Content != nil && strings.TrimSpace(*src.Content.Content) != "" {
+		if dst.Content.Content == nil {
+			dst.Content.Content = lo.ToPtr("")
+		}
+		*dst.Content.Content += *src.Content.Content
+	}
+	if len(src.Content.MultipleContent) > 0 {
+		dst.Content.MultipleContent = append(dst.Content.MultipleContent, src.Content.MultipleContent...)
+	}
+	if len(src.ToolCalls) > 0 {
+		dst.ToolCalls = append(dst.ToolCalls, src.ToolCalls...)
+	}
+	if len(src.Images) > 0 {
+		dst.Images = append(dst.Images, src.Images...)
+	}
+	if strings.TrimSpace(src.Refusal) != "" {
+		dst.Refusal += src.Refusal
+	}
 }
 
 func (i *MessagesInbound) TransformStreamEvents(ctx context.Context, events []model.StreamEvent) ([]byte, error) {

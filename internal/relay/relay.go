@@ -1737,6 +1737,7 @@ func (ra *relayAttempt) forwardViaHTTPPassthroughAnthropic(ctx context.Context) 
 			outboundRequest.Header.Set(header.HeaderKey, header.HeaderValue)
 		}
 	}
+	ra.normalizeAnthropicPassthroughStreamHeaders(outboundRequest)
 	ra.logAnthropicPassthroughRequestSummary(outboundRequest)
 
 	// 发送请求
@@ -1757,7 +1758,7 @@ func (ra *relayAttempt) forwardViaHTTPPassthroughAnthropic(ctx context.Context) 
 		return statusCode, fmt.Errorf("upstream error: %d: %s", response.StatusCode, string(body))
 	}
 
-	if ra.internalRequest.Stream != nil && *ra.internalRequest.Stream {
+	if ra.isAnthropicPassthroughStreamRequest() {
 		if err := ra.handleStreamResponsePassthroughAnthropic(ctx, response); err != nil {
 			return 0, err
 		}
@@ -1767,6 +1768,25 @@ func (ra *relayAttempt) forwardViaHTTPPassthroughAnthropic(ctx context.Context) 
 		return 0, err
 	}
 	return response.StatusCode, nil
+}
+
+func (ra *relayAttempt) isAnthropicPassthroughStreamRequest() bool {
+	if ra == nil {
+		return false
+	}
+	if len(ra.rawBody) > 0 && summarizeAnthropicRequestBody(ra.rawBody).Stream {
+		return true
+	}
+	return ra.internalRequest != nil && ra.internalRequest.Stream != nil && *ra.internalRequest.Stream
+}
+
+func (ra *relayAttempt) normalizeAnthropicPassthroughStreamHeaders(outboundRequest *http.Request) {
+	if outboundRequest == nil {
+		return
+	}
+	if ra.isAnthropicPassthroughStreamRequest() {
+		outboundRequest.Header.Set("Accept", "text/event-stream")
+	}
 }
 
 // forwardViaHTTPStandard 是 forwardViaHTTP 的原路径（直通判定失败时的兜底）。
@@ -1835,6 +1855,23 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
+		if converted, err := ra.convertOpenAIJSONToAnthropicSSE(ctx, body, response); err != nil {
+			return err
+		} else if len(converted) > 0 {
+			writer := ra.getStreamWriter()
+			writer.Header().Set("Content-Type", "text/event-stream")
+			writer.Header().Set("Cache-Control", "no-cache")
+			writer.Header().Set("Connection", "keep-alive")
+			writer.Header().Set("X-Accel-Buffering", "no")
+			if _, werr := writer.Write(converted); werr != nil {
+				return werr
+			}
+			ra.streamPayloadWritten.Store(true)
+			writer.Flush()
+			ra.collectAnthropicPassthroughMetrics(ctx, converted)
+			ra.collectResponse()
+			return nil
+		}
 		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
 	}
 
@@ -2038,6 +2075,180 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 			}
 		}
 	}
+}
+
+func (ra *relayAttempt) convertOpenAIJSONToAnthropicSSE(ctx context.Context, body []byte, response *http.Response) ([]byte, error) {
+	var envelope struct {
+		Object  string          `json:"object"`
+		Choices json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, nil
+	}
+	var outAdapter model.Outbound
+	switch {
+	case len(envelope.Choices) > 0 || strings.Contains(envelope.Object, "chat.completion"):
+		outAdapter = &openaiOutbound.ChatOutbound{}
+	case envelope.Object == "response":
+		outAdapter = &openaiOutbound.ResponseOutbound{}
+	default:
+		return nil, nil
+	}
+
+	sidecar := &http.Response{
+		StatusCode: response.StatusCode,
+		Header:     response.Header.Clone(),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	internalResponse, err := outAdapter.TransformResponse(ctx, sidecar)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert OpenAI JSON stream fallback from Anthropic channel: %w", err)
+	}
+	rendered, err := inbound.Get(inbound.InboundTypeAnthropic).TransformResponse(ctx, internalResponse)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render converted Anthropic JSON fallback: %w", err)
+	}
+	return anthropicMessageJSONToSSE(rendered)
+}
+
+func anthropicMessageJSONToSSE(body []byte) ([]byte, error) {
+	var msg struct {
+		ID           string                     `json:"id"`
+		Type         string                     `json:"type"`
+		Role         string                     `json:"role"`
+		Model        string                     `json:"model"`
+		Content      []json.RawMessage          `json:"content"`
+		StopReason   *string                    `json:"stop_reason"`
+		StopSequence *string                    `json:"stop_sequence"`
+		Usage        *model.Usage               `json:"usage"`
+		Raw          map[string]json.RawMessage `json:"-"`
+	}
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	startMsg := map[string]any{
+		"id":      msg.ID,
+		"type":    "message",
+		"role":    msg.Role,
+		"model":   msg.Model,
+		"content": []any{},
+	}
+	if msg.Usage != nil {
+		startMsg["usage"] = msg.Usage
+	}
+	startEvent := map[string]any{"type": "message_start", "message": startMsg}
+	if err := writeAnthropicJSONSSE(&out, "message_start", startEvent); err != nil {
+		return nil, err
+	}
+	for idx, rawBlock := range msg.Content {
+		var block map[string]any
+		if err := json.Unmarshal(rawBlock, &block); err != nil {
+			return nil, err
+		}
+		if err := writeAnthropicContentBlockSSE(&out, idx, block); err != nil {
+			return nil, err
+		}
+	}
+	delta := map[string]any{}
+	if msg.StopReason != nil {
+		delta["stop_reason"] = *msg.StopReason
+	}
+	if msg.StopSequence != nil {
+		delta["stop_sequence"] = *msg.StopSequence
+	}
+	msgDelta := map[string]any{"type": "message_delta", "delta": delta}
+	if msg.Usage != nil {
+		msgDelta["usage"] = msg.Usage
+	}
+	if err := writeAnthropicJSONSSE(&out, "message_delta", msgDelta); err != nil {
+		return nil, err
+	}
+	if err := writeAnthropicJSONSSE(&out, "message_stop", map[string]any{"type": "message_stop"}); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func writeAnthropicContentBlockSSE(out *bytes.Buffer, idx int, block map[string]any) error {
+	blockType, _ := block["type"].(string)
+	startBlock := block
+	var deltas []map[string]any
+	switch blockType {
+	case "text":
+		text, _ := block["text"].(string)
+		startBlock = map[string]any{"type": "text", "text": ""}
+		if text != "" {
+			deltas = append(deltas, map[string]any{"type": "text_delta", "text": text})
+		}
+	case "thinking":
+		thinking, _ := block["thinking"].(string)
+		signature, _ := block["signature"].(string)
+		startBlock = map[string]any{"type": "thinking", "thinking": ""}
+		if thinking != "" {
+			deltas = append(deltas, map[string]any{"type": "thinking_delta", "thinking": thinking})
+		}
+		if signature != "" {
+			deltas = append(deltas, map[string]any{"type": "signature_delta", "signature": signature})
+		}
+	case "tool_use":
+		startBlock = cloneJSONMap(block)
+		startBlock["input"] = map[string]any{}
+		if input, ok := block["input"]; ok && input != nil {
+			encoded, err := json.Marshal(input)
+			if err != nil {
+				return err
+			}
+			if string(encoded) != "{}" && string(encoded) != "null" {
+				deltas = append(deltas, map[string]any{"type": "input_json_delta", "partial_json": string(encoded)})
+			}
+		}
+	}
+	if err := writeAnthropicJSONSSE(out, "content_block_start", map[string]any{
+		"type":          "content_block_start",
+		"index":         idx,
+		"content_block": startBlock,
+	}); err != nil {
+		return err
+	}
+	for _, delta := range deltas {
+		if err := writeAnthropicJSONSSE(out, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": idx,
+			"delta": delta,
+		}); err != nil {
+			return err
+		}
+	}
+	if err := writeAnthropicJSONSSE(out, "content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": idx,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func cloneJSONMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func writeAnthropicJSONSSE(out *bytes.Buffer, eventName string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	out.WriteString("event:")
+	out.WriteString(eventName)
+	out.WriteString("\n")
+	out.WriteString("data:")
+	out.Write(data)
+	out.WriteString("\n\n")
+	return nil
 }
 
 func (ra *relayAttempt) collectAnthropicPassthroughMetrics(ctx context.Context, rawStream []byte) {

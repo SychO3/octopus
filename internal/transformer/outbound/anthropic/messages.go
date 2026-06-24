@@ -125,7 +125,11 @@ func (o *MessageOutbound) TransformRequestRaw(ctx context.Context, rawBody []byt
 	// 相关 beta（参考 metapi headerUtils.mergeClaudeBetaHeader 的做法）。
 	// x-api-key 与 authorization 被 hop-by-hop 过滤，因此上游密钥不会被客户端覆盖。
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	if rawAnthropicRequestStream(rawBody) {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	req.Header.Set("anthropic-beta", DefaultAnthropicPassthroughBeta)
 	req.Header.Set("X-API-Key", key)
@@ -141,6 +145,16 @@ func (o *MessageOutbound) TransformRequestRaw(ctx context.Context, rawBody []byt
 	req.URL = parsedUrl
 
 	return req, nil
+}
+
+func rawAnthropicRequestStream(rawBody []byte) bool {
+	var payload struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return false
+	}
+	return payload.Stream
 }
 
 func stripEmptySignatureThinkingBlocks(rawBody []byte) []byte {

@@ -149,6 +149,122 @@ func TestTransformResponseEmitsGeminiThoughtSignatureShim(t *testing.T) {
 	}
 }
 
+func TestTransformResponseMergesSplitOpenAIChatChoices(t *testing.T) {
+	stop := "stop"
+	blank := "\n"
+	reasoning := "think"
+	visible := "answer"
+	inbound := &MessagesInbound{}
+	out, err := inbound.TransformResponse(context.Background(), &model.InternalLLMResponse{
+		ID:    "msg_split",
+		Model: "claude-opus-4.6",
+		Choices: []model.Choice{
+			{
+				Index:        0,
+				FinishReason: &stop,
+				Message: &model.Message{
+					Role:    "assistant",
+					Content: model.MessageContent{Content: &blank},
+				},
+			},
+			{
+				Index: 1,
+				Message: &model.Message{
+					Role:             "assistant",
+					ReasoningContent: &reasoning,
+				},
+			},
+			{
+				Index: 2,
+				Message: &model.Message{
+					Role:    "assistant",
+					Content: model.MessageContent{Content: &visible},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("TransformResponse() error = %v", err)
+	}
+
+	var resp Message
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\n%s", err, out)
+	}
+	if len(resp.Content) != 2 {
+		t.Fatalf("expected thinking and text content from split choices, got %+v", resp.Content)
+	}
+	if resp.Content[0].Type != "thinking" || resp.Content[0].Thinking == nil || *resp.Content[0].Thinking != reasoning {
+		t.Fatalf("expected reasoning from choice 1, got %+v", resp.Content[0])
+	}
+	if resp.Content[1].Type != "text" || resp.Content[1].Text == nil || *resp.Content[1].Text != visible {
+		t.Fatalf("expected visible text from choice 2, got %+v", resp.Content[1])
+	}
+	if resp.StopReason == nil || *resp.StopReason != "end_turn" {
+		t.Fatalf("expected stop reason to survive, got %#v", resp.StopReason)
+	}
+}
+
+func TestTransformStreamMergesSplitOpenAIChatChoices(t *testing.T) {
+	stop := "stop"
+	blank := "\n"
+	reasoning := "think"
+	visible := "answer"
+	inbound := &MessagesInbound{}
+	out, err := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{
+		ID:     "chatcmpl_split",
+		Model:  "claude-opus-4.6",
+		Object: "chat.completion.chunk",
+		Choices: []model.Choice{
+			{
+				Index:        0,
+				FinishReason: &stop,
+				Delta: &model.Message{
+					Role:    "assistant",
+					Content: model.MessageContent{Content: &blank},
+				},
+			},
+			{
+				Index: 1,
+				Delta: &model.Message{
+					Role:             "assistant",
+					ReasoningContent: &reasoning,
+				},
+			},
+			{
+				Index: 2,
+				Delta: &model.Message{
+					Role:    "assistant",
+					Content: model.MessageContent{Content: &visible},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("TransformStream() error = %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, `"thinking":"think"`) {
+		t.Fatalf("expected reasoning delta from split choice, got %q", got)
+	}
+	if !strings.Contains(got, `"text":"answer"`) {
+		t.Fatalf("expected text delta from split choice, got %q", got)
+	}
+	done, err := inbound.TransformStream(context.Background(), &model.InternalLLMResponse{
+		ID:     "chatcmpl_split",
+		Model:  "claude-opus-4.6",
+		Object: "chat.completion.chunk",
+		Usage:  &model.Usage{PromptTokens: 2, CompletionTokens: 2, TotalTokens: 4},
+	})
+	if err != nil {
+		t.Fatalf("usage TransformStream() error = %v", err)
+	}
+	got += string(done)
+	if !strings.Contains(got, `"stop_reason":"end_turn"`) {
+		t.Fatalf("expected stop reason to survive, got %q", got)
+	}
+}
+
 func TestAnthropicRequestRestoresGeminiThoughtSignatureFromCache(t *testing.T) {
 	inbound := &MessagesInbound{}
 	_, err := inbound.TransformResponse(context.Background(), &model.InternalLLMResponse{
