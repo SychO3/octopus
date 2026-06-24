@@ -77,7 +77,8 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		}
 	}
 
-	requestModel := internalRequest.Model
+	requestModel := op.ModelMappingResolve(internalRequest.Model)
+	internalRequest.Model = requestModel
 	apiKeyID := c.GetInt("api_key_id")
 
 	// 获取通道分组

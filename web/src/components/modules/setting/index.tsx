@@ -10,6 +10,7 @@ import { SettingReliability } from './Reliability';
 import { SettingSyncTasks } from './SyncTasks';
 import { SettingData } from './Data';
 import { SettingImpersonate } from './Impersonate';
+import { SettingModelMapping } from './ModelMapping';
 
 export function Setting() {
     return (
@@ -23,6 +24,7 @@ export function Setting() {
                 <SettingAccount key="setting-account" />
                 <SettingReliability key="setting-reliability" />
                 <SettingSyncTasks key="setting-sync-tasks" />
+                <SettingModelMapping key="setting-model-mapping" />
                 <SettingData key="setting-data" />
             </PageWrapper>
         </div>
