@@ -98,6 +98,7 @@ func (o *MessageOutbound) TransformRequestRaw(ctx context.Context, rawBody []byt
 	if len(rawBody) == 0 {
 		return nil, fmt.Errorf("raw body is empty")
 	}
+	rawBody = stripEmptySignatureThinkingBlocks(rawBody)
 	if strings.TrimSpace(modelName) != "" {
 		rewrittenBody, err := rewriteRawRequestModel(rawBody, modelName)
 		if err != nil {
@@ -139,6 +140,82 @@ func (o *MessageOutbound) TransformRequestRaw(ctx context.Context, rawBody []byt
 	req.URL = parsedUrl
 
 	return req, nil
+}
+
+func stripEmptySignatureThinkingBlocks(rawBody []byte) []byte {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &root); err != nil {
+		return rawBody
+	}
+	messagesRaw, ok := root["messages"]
+	if !ok {
+		return rawBody
+	}
+	var messages []map[string]json.RawMessage
+	if err := json.Unmarshal(messagesRaw, &messages); err != nil {
+		return rawBody
+	}
+
+	modified := false
+	for idx, msg := range messages {
+		contentRaw, ok := msg["content"]
+		if !ok || !bytes.HasPrefix(bytes.TrimSpace(contentRaw), []byte("[")) {
+			continue
+		}
+		var blocks []map[string]json.RawMessage
+		if err := json.Unmarshal(contentRaw, &blocks); err != nil {
+			continue
+		}
+		kept := blocks[:0]
+		for _, block := range blocks {
+			if isEmptySignatureThinkingBlock(block) {
+				modified = true
+				continue
+			}
+			kept = append(kept, block)
+		}
+		if len(kept) == len(blocks) {
+			continue
+		}
+		encoded, err := json.Marshal(kept)
+		if err != nil {
+			return rawBody
+		}
+		messages[idx]["content"] = encoded
+	}
+	if !modified {
+		return rawBody
+	}
+	encodedMessages, err := json.Marshal(messages)
+	if err != nil {
+		return rawBody
+	}
+	root["messages"] = encodedMessages
+	encoded, err := json.Marshal(root)
+	if err != nil {
+		return rawBody
+	}
+	return encoded
+}
+
+func isEmptySignatureThinkingBlock(block map[string]json.RawMessage) bool {
+	rawType, ok := block["type"]
+	if !ok {
+		return false
+	}
+	var blockType string
+	if err := json.Unmarshal(rawType, &blockType); err != nil || blockType != "thinking" {
+		return false
+	}
+	rawSignature, ok := block["signature"]
+	if !ok {
+		return false
+	}
+	var signature string
+	if err := json.Unmarshal(rawSignature, &signature); err != nil {
+		return false
+	}
+	return strings.TrimSpace(signature) == ""
 }
 
 // rewriteRawRequestModel 仅替换顶层 "model" 字段的 JSON 字符串值，保持其他字节原封不动，

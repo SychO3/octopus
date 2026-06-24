@@ -50,6 +50,100 @@ func TestTransformRequestRawRewritesModel(t *testing.T) {
 	}
 }
 
+func TestTransformRequestRawStripsEmptySignatureThinking(t *testing.T) {
+	outbound := &MessageOutbound{}
+	rawBody := []byte(`{
+		"model":"internal-alias",
+		"max_tokens":16,
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"drop me","signature":""},
+				{"type":"text","text":"keep me"}
+			]},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	req, err := outbound.TransformRequestRaw(
+		context.Background(),
+		rawBody,
+		"claude-3-5-sonnet-20241022",
+		"https://example.com/v1",
+		"test-key",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("TransformRequestRaw() error = %v", err)
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(req.Body) error = %v", err)
+	}
+	if strings.Contains(string(body), `"signature":""`) || strings.Contains(string(body), "drop me") {
+		t.Fatalf("empty-signature thinking block leaked into raw request: %s", string(body))
+	}
+
+	var payload struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal rewritten body error = %v", err)
+	}
+	if len(payload.Messages) == 0 {
+		t.Fatalf("expected messages to survive, got %s", string(body))
+	}
+	var firstContent []anthropicModel.MessageContentBlock
+	if err := json.Unmarshal(payload.Messages[0].Content, &firstContent); err != nil {
+		t.Fatalf("unmarshal first content error = %v; body=%s", err, string(body))
+	}
+	if len(firstContent) != 1 {
+		t.Fatalf("expected only text block to remain, got %s", string(body))
+	}
+	if firstContent[0].Type != "text" || firstContent[0].Text == nil || *firstContent[0].Text != "keep me" {
+		t.Fatalf("expected text block to survive, got %#v", firstContent[0])
+	}
+}
+
+func TestTransformRequestRawKeepsThinkingWithoutSignatureField(t *testing.T) {
+	outbound := &MessageOutbound{}
+	rawBody := []byte(`{
+		"model":"internal-alias",
+		"max_tokens":16,
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"keep unsigned"},
+				{"type":"text","text":"keep text"}
+			]}
+		]
+	}`)
+
+	req, err := outbound.TransformRequestRaw(
+		context.Background(),
+		rawBody,
+		"claude-3-5-sonnet-20241022",
+		"https://example.com/v1",
+		"test-key",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("TransformRequestRaw() error = %v", err)
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(req.Body) error = %v", err)
+	}
+	if !strings.Contains(string(body), "keep unsigned") {
+		t.Fatalf("thinking block without signature field should survive: %s", string(body))
+	}
+	if strings.Contains(string(body), `"signature":""`) {
+		t.Fatalf("test request should not gain empty signature: %s", string(body))
+	}
+}
+
 // TestCollectBetaHeadersAutomation covers A-H7 — each new signal drives a
 // specific anthropic-beta header. The test is table-driven so adding a
 // future trigger only needs a new row, not a whole test function.
