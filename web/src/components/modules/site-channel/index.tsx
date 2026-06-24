@@ -136,6 +136,7 @@ import {
 } from './utils';
 import { useJumpStore, type JumpTarget, type PendingJump, type SiteChannelJumpTarget, isSiteChannelJumpTarget } from '@/stores/jump';
 import { useEnableSiteAccount } from '@/api/endpoints/site';
+import { SettingKey, useSettingValue } from '@/api/endpoints/setting';
 import {
     DEFAULT_SITE_CHANNEL_PANEL_PREFERENCES,
     type SiteChannelQuickFilter,
@@ -1291,6 +1292,7 @@ function SiteAccountPanel({
     const setTableSort = useSiteChannelPanelViewStore((state) => state.setTableSort);
 
     const createKeyMutation = useCreateSiteChannelKey(siteId, account.account_id);
+    const { value: groupRatioLimitStr } = useSettingValue(SettingKey.GroupRatioLimit, '0');
     const sourceKeyMutation = useUpdateSiteSourceKeys(siteId, account.account_id);
     const advancedMutation = useUpdateSiteProjectedChannelSettings(siteId, account.account_id);
     const groupProjectionMutation = useUpdateSiteGroupProjection(siteId, account.account_id);
@@ -1586,6 +1588,29 @@ function SiteAccountPanel({
         );
     };
 
+    const [batchCreating, setBatchCreating] = useState(false);
+    const handleCreateAllKeys = async () => {
+        if (batchCreating || createKeyMutation.isPending) return;
+        const ratioLimit = Number(groupRatioLimitStr) || 0;
+        const groups = ratioLimit > 0
+            ? pendingKeyGroups.filter(g => !g.group_ratio || g.group_ratio <= ratioLimit)
+            : pendingKeyGroups;
+        if (groups.length === 0) {
+            toast.error('所有待建分组倍率均超过上限');
+            return;
+        }
+        setBatchCreating(true);
+        let success = 0;
+        for (const group of groups) {
+            try {
+                await createKeyMutation.mutateAsync({ group_key: group.group_key });
+                success++;
+            } catch { /* continue */ }
+        }
+        setBatchCreating(false);
+        if (success > 0) toast.success(`已为 ${success} 个分组创建 Key`);
+    };
+
     const handleOpenProjectedKeys = (group: SiteChannelGroup) => {
         const items = buildSourceKeyFormItems(group);
         setEditingProjectedGroup(group);
@@ -1839,6 +1864,7 @@ function SiteAccountPanel({
     const activeGroupSuspensionReason = activeGroup?.projection_suspend_reason || activeGroup?.model_sync_message || '';
     const activeGroupStaleReason = activeGroup?.model_sync_message || '';
     const activeQuickFilterCount = panelPreferences.quickFilters.length;
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization
     const pendingKeyGroups = useMemo(
         () => visibleGroups.filter((group) => !group.has_keys),
         [visibleGroups],
@@ -2158,7 +2184,7 @@ function SiteAccountPanel({
                                                     size="sm"
                                                     className="rounded-full border-amber-500/30 bg-white/60 text-amber-800 hover:bg-white dark:bg-background/40 dark:text-amber-200"
                                                     onClick={() => handleOpenCreateKey(group)}
-                                                    disabled={createKeyMutation.isPending}
+                                                    disabled={createKeyMutation.isPending || batchCreating}
                                                 >
                                                     {group.group_name || group.group_key}
                                                     {group.group_ratio ? ` ×${group.group_ratio}` : ''}
@@ -2168,6 +2194,18 @@ function SiteAccountPanel({
                                                 </Button>
                                             ))}
                                         </div>
+                                        {pendingKeyGroups.length > 1 && (
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                className="w-full rounded-full border-amber-500/30 text-amber-800 dark:text-amber-200"
+                                                onClick={handleCreateAllKeys}
+                                                disabled={createKeyMutation.isPending || batchCreating}
+                                            >
+                                                {batchCreating ? '批量创建中...' : `全部创建 (${pendingKeyGroups.length})`}
+                                            </Button>
+                                        )}
                                     </div>
                                 </PopoverContent>
                             </Popover>
