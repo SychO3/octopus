@@ -259,6 +259,67 @@ func TestHandleStreamResponsePassthroughAnthropicDefersSplitOpenAIChatStop(t *te
 	}
 }
 
+func TestHandleStreamResponsePassthroughAnthropicWaitsForToolIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rawSSE := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":"{\"cmd\""}}]}}]}`,
+		"",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"tooluse_late","function":{"name":"Bash","arguments":":\"pwd\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	internalReq := &transformerModel.InternalLLMRequest{
+		Model:        "claude-opus-4-6",
+		Stream:       boolPtr(true),
+		RawAPIFormat: transformerModel.APIFormatAnthropicMessage,
+	}
+	req := &relayRequest{
+		c:               c,
+		inAdapter:       inbound.Get(inbound.InboundTypeAnthropic),
+		internalRequest: internalReq,
+		metrics:         NewRelayMetrics(1, internalReq.Model, nil, internalReq),
+		apiKeyID:        1,
+		requestModel:    internalReq.Model,
+	}
+	ra := &relayAttempt{
+		relayRequest: req,
+		outAdapter:   outbound.Get(outbound.OutboundTypeAnthropic),
+	}
+
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+		},
+		Body: io.NopCloser(bytes.NewReader([]byte(rawSSE))),
+	}
+
+	if err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response); err != nil {
+		t.Fatalf("handleStreamResponsePassthroughAnthropic() error = %v", err)
+	}
+	got := recorder.Body.String()
+	if strings.Contains(got, `"id":""`) || strings.Contains(got, `"name":""`) {
+		t.Fatalf("tool_use must not be emitted before id/name arrive, got %q", got)
+	}
+	if !strings.Contains(got, `"id":"tooluse_late"`) || !strings.Contains(got, `"name":"Bash"`) {
+		t.Fatalf("expected completed tool identity, got %q", got)
+	}
+	if !strings.Contains(got, `"partial_json":"{\"cmd\":\"pwd\"}"`) {
+		t.Fatalf("expected merged tool arguments, got %q", got)
+	}
+	if !strings.Contains(got, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected Anthropic tool_use stop reason, got %q", got)
+	}
+}
+
 func TestConvertOpenAIStreamChunkToAnthropicBuffersPartialFrame(t *testing.T) {
 	ctx := context.Background()
 	inboundStream, ok := inbound.Get(inbound.InboundTypeAnthropic).(transformerModel.InboundStreamEventTransformer)
