@@ -87,8 +87,9 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	return req, nil
 }
 
-// TransformRequestRaw 把客户端原始 Anthropic 请求字节直接转发给上游，仅重写顶层 model 为
-// 当前命中的实际上游模型，不做其他字段白名单解析。
+// TransformRequestRaw 转发客户端原始 Anthropic 请求字节，仅做必要兼容修正：
+// 重写顶层 model，并把 Read 等工具结果中的图片块提升为普通 user image 块，兼容
+// 忽略 tool_result 内图片的上游。
 // 用于 Anthropic → Anthropic 的同协议直通路径，保证 anthropic-beta 相关字段（context_management、
 // betas 等）、内容块原始顺序、extended thinking 签名等信息尽量完整传递到上游。
 //
@@ -100,6 +101,7 @@ func (o *MessageOutbound) TransformRequestRaw(ctx context.Context, rawBody []byt
 		return nil, fmt.Errorf("raw body is empty")
 	}
 	rawBody = stripEmptySignatureThinkingBlocks(rawBody)
+	rawBody = mirrorToolResultImages(rawBody)
 	if strings.TrimSpace(modelName) != "" {
 		rewrittenBody, err := rewriteRawRequestModel(rawBody, modelName)
 		if err != nil {
@@ -155,6 +157,113 @@ func rawAnthropicRequestStream(rawBody []byte) bool {
 		return false
 	}
 	return payload.Stream
+}
+
+func mirrorToolResultImages(rawBody []byte) []byte {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &root); err != nil {
+		return rawBody
+	}
+	messagesRaw, ok := root["messages"]
+	if !ok {
+		return rawBody
+	}
+	var messages []map[string]json.RawMessage
+	if err := json.Unmarshal(messagesRaw, &messages); err != nil {
+		return rawBody
+	}
+
+	modified := false
+	for idx, msg := range messages {
+		role := rawJSONAsString(msg["role"])
+		if role != "user" {
+			continue
+		}
+		contentRaw, ok := msg["content"]
+		if !ok || !bytes.HasPrefix(bytes.TrimSpace(contentRaw), []byte("[")) {
+			continue
+		}
+		var blocks []map[string]json.RawMessage
+		if err := json.Unmarshal(contentRaw, &blocks); err != nil {
+			continue
+		}
+		var mirrored []map[string]json.RawMessage
+		for blockIdx, block := range blocks {
+			if rawJSONAsString(block["type"]) != "tool_result" {
+				continue
+			}
+			content, ok := block["content"]
+			if !ok || !bytes.HasPrefix(bytes.TrimSpace(content), []byte("[")) {
+				continue
+			}
+			var resultBlocks []map[string]json.RawMessage
+			if err := json.Unmarshal(content, &resultBlocks); err != nil {
+				continue
+			}
+			filteredResultBlocks := make([]map[string]json.RawMessage, 0, len(resultBlocks))
+			for _, resultBlock := range resultBlocks {
+				if rawJSONAsString(resultBlock["type"]) != "image" {
+					filteredResultBlocks = append(filteredResultBlocks, resultBlock)
+					continue
+				}
+				mirrored = append(mirrored, cloneRawObject(resultBlock))
+			}
+			if len(filteredResultBlocks) == len(resultBlocks) {
+				continue
+			}
+			rewrittenResultContent, err := json.Marshal(filteredResultBlocks)
+			if err != nil {
+				continue
+			}
+			block["content"] = rewrittenResultContent
+			blocks[blockIdx] = block
+		}
+		if len(mirrored) == 0 {
+			continue
+		}
+		blocks = append(blocks, mirrored...)
+		rewrittenContent, err := json.Marshal(blocks)
+		if err != nil {
+			continue
+		}
+		msg["content"] = rewrittenContent
+		messages[idx] = msg
+		modified = true
+	}
+	if !modified {
+		return rawBody
+	}
+
+	rewrittenMessages, err := json.Marshal(messages)
+	if err != nil {
+		return rawBody
+	}
+	root["messages"] = rewrittenMessages
+	rewrittenBody, err := json.Marshal(root)
+	if err != nil {
+		return rawBody
+	}
+	return rewrittenBody
+}
+
+func rawJSONAsString(raw json.RawMessage) string {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return value
+}
+
+func cloneRawObject(value map[string]json.RawMessage) map[string]json.RawMessage {
+	clone := make(map[string]json.RawMessage, len(value))
+	for key, raw := range value {
+		if raw == nil {
+			continue
+		}
+		copied := append(json.RawMessage(nil), raw...)
+		clone[key] = copied
+	}
+	return clone
 }
 
 func stripEmptySignatureThinkingBlocks(rawBody []byte) []byte {
