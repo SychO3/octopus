@@ -53,11 +53,17 @@ func fetchManagementTokens(ctx context.Context, siteRecord *model.Site, account 
 func revealMaskedTokenKey(ctx context.Context, siteRecord *model.Site, account *model.SiteAccount, accessToken string, item map[string]any) string {
 	tokenID := extractTokenID(item)
 	if tokenID == "" {
+		log.Debugf("cannot extract token ID from item for site %s account %d", siteRecord.Name, account.ID)
 		return ""
 	}
 	requestURL := buildSiteURL(siteRecord.BaseURL, fmt.Sprintf("/api/token/%s/key", tokenID))
 	payload, err := requestJSONWithManagedAccessToken(ctx, siteRecord, "POST", requestURL, nil, accessToken, account)
-	if err != nil || payload == nil {
+	if err != nil {
+		log.Warnf("failed to reveal masked token key for site %s account %d token_id %s: %v", siteRecord.Name, account.ID, tokenID, err)
+		return ""
+	}
+	if payload == nil {
+		log.Warnf("empty response when revealing masked token key for site %s account %d token_id %s", siteRecord.Name, account.ID, tokenID)
 		return ""
 	}
 	// Response: {"success": true, "data": {"key": "sk-full-key-value"}}
@@ -68,8 +74,10 @@ func revealMaskedTokenKey(ctx context.Context, siteRecord *model.Site, account *
 	}
 	fullKey := strings.TrimSpace(jsonString(data["key"]))
 	if fullKey == "" || model.IsMaskedSiteTokenValue(fullKey) {
+		log.Debugf("revealed key is still empty or masked for site %s account %d token_id %s", siteRecord.Name, account.ID, tokenID)
 		return ""
 	}
+	log.Infof("successfully revealed masked token key for site %s account %d token_id %s", siteRecord.Name, account.ID, tokenID)
 	return fullKey
 }
 
