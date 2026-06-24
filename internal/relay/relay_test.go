@@ -478,6 +478,85 @@ func TestConvertOpenAIStreamChunkToAnthropicBuffersPartialFrame(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIStreamChunkToAnthropicSkipsEmptySplitChoiceBlocks(t *testing.T) {
+	ctx := context.Background()
+	inboundStream, ok := inbound.Get(inbound.InboundTypeAnthropic).(transformerModel.InboundStreamEventTransformer)
+	if !ok {
+		t.Fatalf("expected Anthropic inbound to support stream events")
+	}
+	var outboundStream transformerModel.OutboundStreamEventTransformer
+	var pending []byte
+	var terminal openAIChatTerminalState
+
+	chunk := []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"\n"},"finish_reason":"stop"},{"index":1,"delta":{"reasoning_content":"\nthink\n"}},{"index":2,"delta":{"content":"\n\nhello"}}]}` + "\n\n")
+
+	out, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, chunk, "", &outboundStream, inboundStream, &pending, &terminal)
+	if err != nil {
+		t.Fatalf("chunk returned error: %v", err)
+	}
+	flushed, err := inboundStream.TransformStreamEvents(ctx, flushOpenAIChatTerminalEvents(&terminal))
+	if err != nil {
+		t.Fatalf("flush returned error: %v", err)
+	}
+	got := string(append(out, flushed...))
+	if protocol != "openai_chat" {
+		t.Fatalf("expected protocol openai_chat, got %q", protocol)
+	}
+	if strings.Count(got, `"type":"text"`) != 1 {
+		t.Fatalf("expected one text block for visible content, got %q", got)
+	}
+	if strings.Contains(got, `"text":"\n"`) {
+		t.Fatalf("must not emit whitespace-only text delta for split role-only choice, got %q", got)
+	}
+	if !strings.Contains(got, `"type":"thinking"`) || !strings.Contains(got, `"thinking":"\nthink\n"`) {
+		t.Fatalf("expected reasoning block, got %q", got)
+	}
+	if !strings.Contains(got, `"text":"\n\nhello"`) {
+		t.Fatalf("expected visible content delta, got %q", got)
+	}
+}
+
+func TestConvertOpenAIStreamChunkToAnthropicSkipsCrossFrameWhitespaceTerminalChoice(t *testing.T) {
+	ctx := context.Background()
+	inboundStream, ok := inbound.Get(inbound.InboundTypeAnthropic).(transformerModel.InboundStreamEventTransformer)
+	if !ok {
+		t.Fatalf("expected Anthropic inbound to support stream events")
+	}
+	var outboundStream transformerModel.OutboundStreamEventTransformer
+	var pending []byte
+	var terminal openAIChatTerminalState
+	var protocol string
+	var combined []byte
+
+	frames := [][]byte{
+		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"\n"},"finish_reason":"stop"}]}` + "\n\n"),
+		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":1,"delta":{"reasoning_content":"\nthink\n"}}]}` + "\n\n"),
+		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":2,"delta":{"content":"\n\nhello"}}]}` + "\n\n"),
+	}
+	for _, frame := range frames {
+		out, nextProtocol, err := convertOpenAIStreamChunkToAnthropic(ctx, frame, protocol, &outboundStream, inboundStream, &pending, &terminal)
+		if err != nil {
+			t.Fatalf("chunk returned error: %v", err)
+		}
+		protocol = nextProtocol
+		combined = append(combined, out...)
+	}
+	flushed, err := inboundStream.TransformStreamEvents(ctx, flushOpenAIChatTerminalEvents(&terminal))
+	if err != nil {
+		t.Fatalf("flush returned error: %v", err)
+	}
+	got := string(append(combined, flushed...))
+	if strings.Count(got, `"type":"text"`) != 1 {
+		t.Fatalf("expected one text block for visible content, got %q", got)
+	}
+	if strings.Contains(got, `"text":"\n"`) {
+		t.Fatalf("must not emit whitespace-only text delta before later payload, got %q", got)
+	}
+	if !strings.Contains(got, `"thinking":"\nthink\n"`) || !strings.Contains(got, `"text":"\n\nhello"`) {
+		t.Fatalf("expected reasoning and visible content, got %q", got)
+	}
+}
+
 func TestHandleStreamResponsePassthroughOpenAIResponsesPreservesRawSSE(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
