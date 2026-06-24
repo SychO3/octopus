@@ -1226,6 +1226,150 @@ func (ra *relayAttempt) shouldPassthroughOpenAIResponses() bool {
 	return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
 }
 
+// handleStreamResponsePassthroughV2 基于 StreamProcessor 的统一直通流处理。
+// 适用于任意 PassthroughCapable 协议（OpenAI Responses 等纯字节直通；Anthropic
+// 因需在直通路径做协议转换，仍走专用 handler）。
+func (ra *relayAttempt) handleStreamResponsePassthroughV2(ctx context.Context, response *http.Response, cfg model.PassthroughConfig) error {
+	defer ra.closeFirstTokenBudget()
+
+	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
+		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
+	}
+
+	ra.heartbeat.Hand()
+
+	var firstTokenTimeout time.Duration
+	if ra.firstTokenTimeOutSec > 0 && ra.firstTokenBudget == nil {
+		firstTokenTimeout = time.Duration(ra.firstTokenTimeOutSec) * time.Second
+	}
+
+	var rawStreamBuf bytes.Buffer
+
+	processor := stream.NewStreamProcessor(stream.StreamConfig{
+		Source:            stream.NewRawSource(response.Body, 32*1024),
+		Transform:         nil, // 直通：不做转换
+		Writer:            ra.getStreamWriter(),
+		Context:           ctx,
+		FirstTokenTimeout: firstTokenTimeout,
+		HeartbeatInterval: streamHeartbeatInterval(),
+		BufferRawStream:   true,
+		TerminalEvents:    cfg.TerminalEvents,
+		OnFirstToken: func() {
+			ra.metrics.SetFirstTokenTime(time.Now())
+			ra.stopFirstTokenTimer()
+		},
+		OnFinish: func(ctx context.Context, rawStream []byte) error {
+			if len(rawStream) == 0 {
+				return stream.ErrEmptyUpstreamStream
+			}
+			rawStreamBuf.Write(rawStream)
+			ra.collectPassthroughMetrics(ctx, rawStream)
+			if cfg.CollectMetrics {
+				ra.collectResponse()
+			}
+			log.Debugf("passthrough stream end")
+			return nil
+		},
+	})
+
+	err := processor.Run()
+
+	if processor.PayloadWritten() {
+		ra.streamPayloadWritten.Store(true)
+	}
+
+	if err != nil {
+		if strings.Contains(err.Error(), "first token timeout") {
+			_ = response.Body.Close()
+			return ra.firstTokenTimeoutError()
+		}
+		if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, err); timeoutErr != nil {
+			return timeoutErr
+		}
+		// 客户端断连但已缓存部分数据：仍尝试收集 metrics
+		if errors.Is(err, context.Canceled) && rawStreamBuf.Len() > 0 {
+			ra.collectPassthroughMetrics(context.Background(), rawStreamBuf.Bytes())
+			if cfg.CollectMetrics {
+				ra.collectResponse()
+			}
+		}
+	}
+
+	return err
+}
+
+// collectPassthroughMetrics 旁路解析原始 SSE 流用于 metrics 聚合，不改写响应。
+func (ra *relayAttempt) collectPassthroughMetrics(ctx context.Context, rawStream []byte) {
+	if len(rawStream) == 0 {
+		return
+	}
+
+	outEventAdapter, outOk := ra.outAdapter.(model.OutboundStreamEventTransformer)
+	inEventAdapter, inOk := ra.inAdapter.(model.InboundStreamEventTransformer)
+	if outOk && inOk {
+		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
+		for ev, err := range sse.Read(bytes.NewReader(rawStream), readCfg) {
+			if err != nil {
+				log.Debugf("passthrough metrics parse skipped: %v", err)
+				return
+			}
+			if events, terr := outEventAdapter.TransformStreamEvent(ctx, []byte(ev.Data)); terr == nil && len(events) > 0 {
+				_, _ = inEventAdapter.TransformStreamEvents(ctx, events)
+			}
+		}
+		return
+	}
+
+	readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
+	for ev, err := range sse.Read(bytes.NewReader(rawStream), readCfg) {
+		if err != nil {
+			log.Debugf("passthrough metrics parse skipped: %v", err)
+			return
+		}
+		if chunk, terr := ra.outAdapter.TransformStream(ctx, []byte(ev.Data)); terr == nil && chunk != nil {
+			_, _ = ra.inAdapter.TransformStream(ctx, chunk)
+		}
+	}
+}
+
+// handleResponsePassthrough 处理非流式直通响应。
+func (ra *relayAttempt) handleResponsePassthrough(ctx context.Context, response *http.Response, cfg model.PassthroughConfig) error {
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	contentType := response.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	ra.c.Data(response.StatusCode, contentType, body)
+
+	sidecarResp := &http.Response{
+		StatusCode: response.StatusCode,
+		Header:     response.Header.Clone(),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	if internalResponse, terr := ra.outAdapter.TransformResponse(ctx, sidecarResp); terr == nil && internalResponse != nil {
+		_, _ = ra.inAdapter.TransformResponse(ctx, internalResponse)
+		if cfg.CollectMetrics {
+			ra.collectResponse()
+		}
+	}
+	return nil
+}
+
+// handleStreamResponsePassthroughOpenAIResponses 是 OpenAI Responses 直通流的命名入口，
+// 解析其 PassthroughConfig 后委托给通用的 handleStreamResponsePassthroughV2。
+func (ra *relayAttempt) handleStreamResponsePassthroughOpenAIResponses(ctx context.Context, response *http.Response) error {
+	cfg := model.PassthroughConfig{TerminalEvents: responsesPassthroughTerminalEvents, CollectMetrics: false}
+	if openaiOut, ok := ra.outAdapter.(*openaiOutbound.ResponseOutbound); ok {
+		cfg = openaiOut.PassthroughConfig()
+	}
+	return ra.handleStreamResponsePassthroughV2(ctx, response, cfg)
+}
+
 // forwardViaHTTPPassthroughOpenAIResponses 直通 OpenAI Responses 原始 JSON/SSE。
 // 客户端原始 body 只改顶层 model 后发上游，响应原样写回客户端；旁路解析仅用于 metrics。
 func (ra *relayAttempt) forwardViaHTTPPassthroughOpenAIResponses(ctx context.Context) (int, error) {
@@ -1282,210 +1426,17 @@ func (ra *relayAttempt) forwardViaHTTPPassthroughOpenAIResponses(ctx context.Con
 		return statusCode, fmt.Errorf("upstream error: %d: %s", response.StatusCode, string(body))
 	}
 
+	cfg := openaiOut.PassthroughConfig()
 	if ra.internalRequest.Stream != nil && *ra.internalRequest.Stream {
-		if err := ra.handleStreamResponsePassthroughOpenAIResponses(ctx, response); err != nil {
+		if err := ra.handleStreamResponsePassthroughV2(ctx, response, cfg); err != nil {
 			return 0, err
 		}
 		return response.StatusCode, nil
 	}
-	if err := ra.handleResponsePassthroughOpenAIResponses(ctx, response); err != nil {
+	if err := ra.handleResponsePassthrough(ctx, response, cfg); err != nil {
 		return 0, err
 	}
 	return response.StatusCode, nil
-}
-
-func (ra *relayAttempt) handleStreamResponsePassthroughOpenAIResponses(ctx context.Context, response *http.Response) error {
-	defer ra.closeFirstTokenBudget()
-
-	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
-		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
-	}
-
-	// 交接早期心跳给本函数内层 ticker
-	ra.heartbeat.Hand()
-
-	writer := ra.getStreamWriter()
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.Header().Set("X-Accel-Buffering", "no")
-
-	heartbeatTicker, heartbeatC := newStreamHeartbeatTicker()
-	if heartbeatTicker != nil {
-		defer heartbeatTicker.Stop()
-	}
-
-	firstToken := true
-	type rawReadResult struct {
-		chunk []byte
-		err   error
-	}
-	results := make(chan rawReadResult, 1)
-	safe.Go("relay-stream-read", func() {
-		defer close(results)
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := response.Body.Read(buf)
-			if n > 0 {
-				chunk := append([]byte(nil), buf[:n]...)
-				results <- rawReadResult{chunk: chunk}
-			}
-			if err != nil {
-				results <- rawReadResult{err: err}
-				return
-			}
-		}
-	})
-	var rawStream bytes.Buffer
-
-	finishStream := func(c context.Context) error {
-		if !ra.streamPayloadWritten.Load() {
-			return errEmptyUpstreamStream
-		}
-		ra.collectOpenAIResponsesPassthroughMetrics(c, rawStream.Bytes())
-		log.Debugf("stream end")
-		return nil
-	}
-
-	disconnect := func() error {
-		err := contextError(ctx)
-		if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, err); timeoutErr != nil {
-			return timeoutErr
-		}
-		if isLocalRelayBudgetExceeded(ctx, err) {
-			return err
-		}
-		// 客户端收到终态事件后立即断连是 SDK 标准行为，此时上游 EOF 可能尚未到达；
-		// 缓存流已含终态事件说明响应已完整送达，按正常结束处理，避免误记失败且丢失 usage。
-		if streamReachedTerminalEvent(rawStream.Bytes(), responsesPassthroughTerminalEvents) {
-			return finishStream(context.Background())
-		}
-		log.Debugf("client disconnected, stopping stream: written=%t raw_bytes=%d first_token_seen=%t elapsed=%s", ra.streamPayloadWritten.Load(), rawStream.Len(), !firstToken, time.Since(ra.metrics.StartTime))
-		if rawStream.Len() > 0 {
-			ra.collectOpenAIResponsesPassthroughMetrics(context.Background(), rawStream.Bytes())
-		}
-		return err
-	}
-
-	var firstTokenTimer *time.Timer
-	var firstTokenC <-chan time.Time
-	if firstToken && ra.firstTokenTimeOutSec > 0 && ra.firstTokenBudget == nil {
-		firstTokenTimer = time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
-		firstTokenC = firstTokenTimer.C
-		defer func() {
-			if firstTokenTimer != nil {
-				firstTokenTimer.Stop()
-			}
-		}()
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			// 上游 EOF 与客户端断连可能同时发生，select 在多就绪 case 中随机选择，
-			// 此时优先消费 results 中已就绪的终止信号，避免把正常结束的流误判为断连。
-			select {
-			case r, ok := <-results:
-				if !ok || (r.err != nil && r.err == io.EOF) {
-					return finishStream(context.Background())
-				}
-				if r.err != nil {
-					if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, r.err); timeoutErr != nil {
-						return timeoutErr
-					}
-					// 断连取消沿出站请求传播、被读侧先观察到时，按断连处理而非上游流失败
-					if !errors.Is(r.err, context.Canceled) {
-						log.Warnf("failed to read event: %v", r.err)
-						return fmt.Errorf("failed to read stream event: %w", r.err)
-					}
-				}
-			default:
-			}
-			return disconnect()
-		case <-firstTokenC:
-			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
-			_ = response.Body.Close()
-			return ra.firstTokenTimeoutError()
-		case <-heartbeatC:
-			if err := writeSSEHeartbeat(writer); err != nil {
-				return err
-			}
-		case r, ok := <-results:
-			if !ok {
-				return finishStream(ctx)
-			}
-			if r.err != nil {
-				if r.err == io.EOF {
-					return finishStream(ctx)
-				}
-				if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, r.err); timeoutErr != nil {
-					return timeoutErr
-				}
-				if errors.Is(r.err, context.Canceled) && contextError(ctx) != nil {
-					return disconnect()
-				}
-				log.Warnf("failed to read event: %v", r.err)
-				return fmt.Errorf("failed to read stream event: %w", r.err)
-			}
-			if len(r.chunk) == 0 {
-				continue
-			}
-			if _, werr := writer.Write(r.chunk); werr != nil {
-				return werr
-			}
-			ra.streamPayloadWritten.Store(true)
-			_, _ = rawStream.Write(r.chunk)
-			writer.Flush()
-
-			if firstToken {
-				ra.metrics.SetFirstTokenTime(time.Now())
-				firstToken = false
-				ra.stopFirstTokenTimer()
-				if firstTokenTimer != nil {
-					if !firstTokenTimer.Stop() {
-						select {
-						case <-firstTokenTimer.C:
-						default:
-						}
-					}
-					firstTokenTimer = nil
-					firstTokenC = nil
-				}
-			}
-		}
-	}
-}
-
-func (ra *relayAttempt) collectOpenAIResponsesPassthroughMetrics(ctx context.Context, rawStream []byte) {
-	if len(rawStream) == 0 {
-		return
-	}
-	outEventAdapter, outOk := ra.outAdapter.(model.OutboundStreamEventTransformer)
-	inEventAdapter, inOk := ra.inAdapter.(model.InboundStreamEventTransformer)
-	if outOk && inOk {
-		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
-		for ev, err := range sse.Read(bytes.NewReader(rawStream), readCfg) {
-			if err != nil {
-				log.Debugf("openai responses passthrough metrics parse skipped: %v", err)
-				return
-			}
-			if events, terr := outEventAdapter.TransformStreamEvent(ctx, []byte(ev.Data)); terr == nil && len(events) > 0 {
-				_, _ = inEventAdapter.TransformStreamEvents(ctx, events)
-			}
-		}
-		return
-	}
-	readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
-	for ev, err := range sse.Read(bytes.NewReader(rawStream), readCfg) {
-		if err != nil {
-			log.Debugf("openai responses passthrough metrics parse skipped: %v", err)
-			return
-		}
-		if internalStream, terr := ra.outAdapter.TransformStream(ctx, []byte(ev.Data)); terr == nil && internalStream != nil {
-			_, _ = ra.inAdapter.TransformStream(ctx, internalStream)
-		}
-	}
 }
 
 // responsesPassthroughTerminalEvents / anthropicPassthroughTerminalEvents 定义各协议
@@ -1529,29 +1480,6 @@ func streamReachedTerminalEvent(rawStream []byte, terminalTypes map[string]struc
 		}
 	}
 	return false
-}
-
-func (ra *relayAttempt) handleResponsePassthroughOpenAIResponses(ctx context.Context, response *http.Response) error {
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	contentType := response.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/json"
-	}
-	ra.c.Data(response.StatusCode, contentType, body)
-
-	sidecarResp := &http.Response{
-		StatusCode: response.StatusCode,
-		Header:     response.Header.Clone(),
-		Body:       io.NopCloser(bytes.NewReader(body)),
-	}
-	if internalResponse, terr := ra.outAdapter.TransformResponse(ctx, sidecarResp); terr == nil && internalResponse != nil {
-		_, _ = ra.inAdapter.TransformResponse(ctx, internalResponse)
-	}
-	return nil
 }
 
 // forwardViaHTTPPassthroughAnthropic 直通路径：客户端原始 body 原样转发；上游响应原样写回客户端；
