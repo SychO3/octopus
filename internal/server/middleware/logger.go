@@ -24,7 +24,8 @@ func Logger(cfg LoggerConfig) gin.HandlerFunc {
 
 		latency := time.Since(start)
 		status := c.Writer.Status()
-		shouldLog := cfg.Enabled || status >= 500 || latency >= cfg.SlowThreshold || len(c.Errors) > 0
+		isLongLivedStream := isLongLivedStreamPath(path)
+		shouldLog := cfg.Enabled || status >= 500 || (!isLongLivedStream && latency >= cfg.SlowThreshold) || len(c.Errors) > 0
 		if !shouldLog {
 			return
 		}
@@ -57,4 +58,8 @@ func Logger(cfg LoggerConfig) gin.HandlerFunc {
 			}
 		}
 	}
+}
+
+func isLongLivedStreamPath(path string) bool {
+	return path == "/api/v1/log/stream"
 }
