@@ -12,8 +12,7 @@ export function useModelMappingList() {
     return useQuery({
         queryKey: ['model-mapping', 'list'],
         queryFn: async () => {
-            const res = await apiClient.get<{ data: ModelMapping[] }>('/api/v1/model-mapping/list');
-            return res.data.data ?? [];
+            return apiClient.get<ModelMapping[]>('/api/v1/model-mapping/list');
         },
     });
 }
