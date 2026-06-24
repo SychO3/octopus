@@ -3,6 +3,8 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/conf"
@@ -277,9 +279,48 @@ func intPtr(value int) *int {
 	return &value
 }
 
+var modelVersionDotPattern = regexp.MustCompile(`-(\d+)-(\d+)(-|$)`)
+
 // resolveModelPrice returns the global price configured for the actual model.
 func resolveModelPrice(actualModel string) *model.LLMPrice {
-	return price.GetLLMPrice(actualModel)
+	for _, candidate := range modelPriceCandidates(actualModel) {
+		if modelPrice := price.GetLLMPrice(candidate); modelPrice != nil {
+			return modelPrice
+		}
+	}
+	return nil
+}
+
+func modelPriceCandidates(modelName string) []string {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	if modelName == "" {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	candidates := make([]string, 0, 6)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		candidates = append(candidates, value)
+	}
+
+	add(modelName)
+	parts := strings.Split(modelName, "/")
+	if len(parts) > 1 {
+		add(parts[len(parts)-1])
+	}
+	for _, candidate := range append([]string(nil), candidates...) {
+		add(strings.ReplaceAll(candidate, ".", "-"))
+		add(modelVersionDotPattern.ReplaceAllString(candidate, `-$1.$2$3`))
+	}
+	return candidates
 }
 
 func wsModePtr(value model.RelayLogWSMode) *model.RelayLogWSMode {
