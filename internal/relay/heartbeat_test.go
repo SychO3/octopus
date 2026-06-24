@@ -10,6 +10,7 @@ import (
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/gin-gonic/gin"
 )
 
@@ -230,17 +231,58 @@ func TestFlushRelayFailure_StreamForcesSSEError(t *testing.T) {
 	hb := startEarlyHeartbeat(c, true)
 	defer hb.Stop()
 
-	flushRelayFailure(c, hb, true, http.StatusBadGateway, "channel failed")
+	flushRelayFailure(c, hb, inbound.Get(inbound.InboundTypeAnthropic), true, http.StatusBadGateway, "channel failed")
 
 	body := w.Body.String()
-	if !strings.Contains(body, "event: error") {
+	if !strings.Contains(body, "event:error") && !strings.Contains(body, "event: error") {
 		t.Fatalf("stream failure should produce SSE error event, got %q", body)
 	}
-	if !strings.Contains(body, `"code":502`) {
-		t.Fatalf("expected status code in SSE error payload, got %q", body)
+	if !strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("expected Anthropic error event type in SSE payload, got %q", body)
+	}
+	if !strings.Contains(body, `"type":"api_error"`) {
+		t.Fatalf("expected Anthropic api_error detail in SSE payload, got %q", body)
 	}
 	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
 		t.Fatalf("expected SSE Content-Type, got %q", got)
+	}
+}
+
+func TestFlushRelayFailure_StreamUsesOpenAIChatErrorShape(t *testing.T) {
+	setupRelayTestDB(t)
+	setHeartbeatSettings(t, "1", "0")
+
+	c, w := newTestGinContext(t)
+	hb := startEarlyHeartbeat(c, true)
+	defer hb.Stop()
+
+	flushRelayFailure(c, hb, inbound.Get(inbound.InboundTypeOpenAIChat), true, http.StatusBadGateway, "channel failed")
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"error":{"message":"channel failed","type":"api_error"}`) {
+		t.Fatalf("expected OpenAI Chat error SSE payload, got %q", body)
+	}
+	if strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("OpenAI Chat stream should not use Anthropic error event payload, got %q", body)
+	}
+}
+
+func TestFlushRelayFailure_StreamUsesOpenAIResponsesErrorShape(t *testing.T) {
+	setupRelayTestDB(t)
+	setHeartbeatSettings(t, "1", "0")
+
+	c, w := newTestGinContext(t)
+	hb := startEarlyHeartbeat(c, true)
+	defer hb.Stop()
+
+	flushRelayFailure(c, hb, inbound.Get(inbound.InboundTypeOpenAIResponse), true, http.StatusBadGateway, "channel failed")
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"type":"response.failed"`) {
+		t.Fatalf("expected OpenAI Responses failed event payload, got %q", body)
+	}
+	if !strings.Contains(body, `"status":"failed"`) || !strings.Contains(body, `"message":"channel failed"`) {
+		t.Fatalf("expected OpenAI Responses failed payload, got %q", body)
 	}
 }
 
