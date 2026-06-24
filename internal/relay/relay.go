@@ -299,19 +299,19 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		if lastResult.RetryAfter > 0 {
 			c.Header("Retry-After", fmt.Sprintf("%d", int(lastResult.RetryAfter.Seconds())))
 		}
-		flushRelayFailure(c, hb, isStream, lastResult.StatusCode, "channel failed")
+		flushRelayFailure(c, hb, inAdapter, isStream, lastResult.StatusCode, "channel failed")
 		return
 	}
 	if lastResult.StatusCode > 0 {
-		flushRelayFailure(c, hb, isStream, lastResult.StatusCode, "channel failed")
+		flushRelayFailure(c, hb, inAdapter, isStream, lastResult.StatusCode, "channel failed")
 		return
 	}
-	flushRelayFailure(c, hb, isStream, http.StatusBadGateway, "channel failed")
+	flushRelayFailure(c, hb, inAdapter, isStream, http.StatusBadGateway, "channel failed")
 }
 
-func flushRelayFailure(c *gin.Context, hb *earlyHeartbeat, isStream bool, statusCode int, message string) {
+func flushRelayFailure(c *gin.Context, hb *earlyHeartbeat, inAdapter model.Inbound, isStream bool, statusCode int, message string) {
 	if isStream {
-		hb.FlushSSEOrError(c, statusCode, message)
+		hb.FlushSSEOrProtocolError(c, inAdapter, statusCode, message)
 		return
 	}
 	hb.FlushOrError(c, statusCode, message)

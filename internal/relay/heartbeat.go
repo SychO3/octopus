@@ -11,6 +11,7 @@ import (
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/server/resp"
+	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/utils/safe"
 	"github.com/gin-gonic/gin"
@@ -159,18 +160,24 @@ func (h *earlyHeartbeat) HeaderWritten() bool {
 }
 
 func (h *earlyHeartbeat) WriteSSEError(statusCode int, message string) {
+	h.WriteSSEErrorBytes(statusCode, message, nil)
+}
+
+func (h *earlyHeartbeat) WriteSSEErrorBytes(statusCode int, message string, event []byte) {
 	if h == nil || h.c == nil {
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"code":    statusCode,
-		"message": message,
-	})
+	if len(event) == 0 {
+		payload, _ := json.Marshal(map[string]any{
+			"code":    statusCode,
+			"message": message,
+		})
+		event = append([]byte("event: error\ndata: "), payload...)
+		event = append(event, []byte("\n\n")...)
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, _ = h.c.Writer.Write([]byte("event: error\ndata: "))
-	_, _ = h.c.Writer.Write(payload)
-	_, _ = h.c.Writer.Write([]byte("\n\n"))
+	_, _ = h.c.Writer.Write(event)
 	h.c.Writer.Flush()
 }
 
@@ -183,12 +190,36 @@ func (h *earlyHeartbeat) FlushOrError(c *gin.Context, statusCode int, message st
 }
 
 func (h *earlyHeartbeat) FlushSSEOrError(c *gin.Context, statusCode int, message string) {
+	h.FlushSSEOrProtocolError(c, nil, statusCode, message)
+}
+
+func (h *earlyHeartbeat) FlushSSEOrProtocolError(c *gin.Context, inAdapter model.Inbound, statusCode int, message string) {
 	if h != nil && h.c != nil {
 		h.mu.Lock()
 		h.writeSSEHeaderLocked()
 		h.mu.Unlock()
-		h.WriteSSEError(statusCode, message)
+		h.WriteSSEErrorBytes(statusCode, message, transformProtocolSSEError(c.Request.Context(), inAdapter, statusCode, message))
 		return
 	}
 	resp.Error(c, statusCode, message)
+}
+
+func transformProtocolSSEError(ctx context.Context, inAdapter model.Inbound, statusCode int, message string) []byte {
+	if inAdapter == nil {
+		return nil
+	}
+	event, err := inAdapter.TransformStream(ctx, &model.InternalLLMResponse{
+		Error: &model.ResponseError{
+			StatusCode: statusCode,
+			Detail: model.ErrorDetail{
+				Type:    "api_error",
+				Message: message,
+			},
+		},
+	})
+	if err != nil {
+		log.Warnw("relay.stream_failure_error_transform_failed", "status", statusCode, "error", err.Error())
+		return nil
+	}
+	return event
 }
