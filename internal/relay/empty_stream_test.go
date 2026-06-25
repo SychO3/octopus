@@ -320,6 +320,95 @@ func TestPassthroughAnthropicNativeTerminalChunkAfterPayloadIsForwarded(t *testi
 	}
 }
 
+func TestPassthroughAnthropicNativeDoesNotForwardPartialFrame(t *testing.T) {
+	ra, _ := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+	writer := &notifyStreamWriter{header: http.Header{}}
+	ra.streamWriter = writer
+
+	completeFrames := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Write","input":{}}}`,
+		"",
+		"",
+	}, "\n")
+	partialFrame := "event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/tmp`
+	frameRemainder := `\"}"}}` + "\n\n"
+	terminalFrames := strings.Join([]string{
+		"event: content_block_stop",
+		`data: {"type":"content_block_stop","index":0}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+	writer.onWrite = func(p []byte) {
+		if bytes.Contains(p, []byte(partialFrame)) && !bytes.Contains(p, []byte(partialFrame+frameRemainder)) {
+			t.Fatalf("forwarded an incomplete SSE frame in one write: %q", string(p))
+		}
+	}
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseChunkedTestResponse(completeFrames+partialFrame, frameRemainder+terminalFrames))
+	if err != nil {
+		t.Fatalf("expected split frame stream to succeed, got %v", err)
+	}
+	got := writer.buf.String()
+	if !strings.Contains(got, completeFrames) {
+		t.Fatalf("expected complete initial frames to be forwarded, got %q", got)
+	}
+	if !strings.Contains(got, partialFrame+frameRemainder) {
+		t.Fatalf("expected completed split frame to be forwarded, got %q", got)
+	}
+	for _, want := range []string{
+		`event: content_block_stop`,
+		`event: message_stop`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %s to be forwarded, got %q", want, got)
+		}
+	}
+}
+
+func TestPassthroughAnthropicNativeTextFrameSplitAcrossChunks(t *testing.T) {
+	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
+
+	firstFrame := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+		"",
+	}, "\n")
+	partialSecond := "event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel`
+	secondRemainder := `lo"}}` + "\n\n" +
+		strings.Join([]string{
+			"event: message_stop",
+			`data: {"type":"message_stop"}`,
+			"",
+		}, "\n")
+
+	err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), sseChunkedTestResponse(firstFrame+partialSecond, secondRemainder))
+	if err != nil {
+		t.Fatalf("expected split frame stream to succeed, got %v", err)
+	}
+	got := recorder.Body.String()
+	if strings.Contains(got, partialSecond) && !strings.Contains(got, partialSecond+`lo"}}`) {
+		t.Fatalf("forwarded an incomplete SSE frame: %q", got)
+	}
+	if !strings.Contains(got, firstFrame) {
+		t.Fatalf("expected complete first frame to be forwarded, got %q", got)
+	}
+	if !strings.Contains(got, `event: content_block_delta`) || !strings.Contains(got, `event: message_stop`) {
+		t.Fatalf("expected completed split frame and terminal frame to be forwarded, got %q", got)
+	}
+}
+
 func TestPassthroughAnthropicNativeEmptyAssistantUsageDeltaStopFailsBeforeWrite(t *testing.T) {
 	ra, recorder := newEmptyStreamTestAttempt(t, inbound.InboundTypeAnthropic, transformerModel.APIFormatAnthropicMessage, outbound.OutboundTypeAnthropic)
 

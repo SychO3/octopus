@@ -1885,9 +1885,28 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 						continue
 					}
 				}
-				chunk = candidate
+				completeFrames, pending := splitCompleteSSEFrames(candidate)
+				if len(completeFrames) == 0 {
+					if safeFrame, ok := completeTerminalSSEFrameWithoutSeparator(candidate, anthropicPassthroughTerminalEvents); ok {
+						chunk = safeFrame
+						nativeAnthropicPending.Reset()
+						goto writeChunk
+					}
+					nativeAnthropicPending.Reset()
+					_, _ = nativeAnthropicPending.Write(candidate)
+					continue
+				}
+				chunk = bytes.Join(completeFrames, nil)
 				nativeAnthropicPending.Reset()
+				if len(pending) > 0 {
+					if safeFrame, ok := completeTerminalSSEFrameWithoutSeparator(pending, anthropicPassthroughTerminalEvents); ok {
+						chunk = append(chunk, safeFrame...)
+					} else {
+						_, _ = nativeAnthropicPending.Write(pending)
+					}
+				}
 			}
+		writeChunk:
 			chunk = ra.rewriteUpstreamModelInChunk(chunk)
 			_, _ = rawStream.Write(chunk)
 			if _, werr := writer.Write(chunk); werr != nil {
@@ -2709,6 +2728,56 @@ func popCompleteSSEFrames(pending *[]byte) [][]byte {
 		frames = append(frames, frame)
 		*pending = append([]byte(nil), data[end:]...)
 	}
+}
+
+func splitCompleteSSEFrames(data []byte) ([][]byte, []byte) {
+	pending := append([]byte(nil), data...)
+	frames := popCompleteSSEFrames(&pending)
+	return frames, pending
+}
+
+func completeTerminalSSEFrameWithoutSeparator(data []byte, terminalTypes map[string]struct{}) ([]byte, bool) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, false
+	}
+	if _, sepLen := completeSSEFrameIndex(data); sepLen > 0 {
+		return nil, false
+	}
+	parseFrame := append([]byte(nil), data...)
+	if !bytes.HasSuffix(parseFrame, []byte("\n")) {
+		parseFrame = append(parseFrame, '\n')
+	}
+	parseFrame = append(parseFrame, '\n')
+
+	readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
+	readAny := false
+	for ev, err := range sse.Read(bytes.NewReader(parseFrame), readCfg) {
+		if err != nil {
+			return nil, false
+		}
+		readAny = true
+		if _, ok := terminalTypes[terminalEventType(ev)]; !ok {
+			return nil, false
+		}
+	}
+	if !readAny {
+		return nil, false
+	}
+	return append([]byte(nil), data...), true
+}
+
+func terminalEventType(ev sse.Event) string {
+	typ := strings.TrimSpace(ev.Type)
+	if typ != "" {
+		return typ
+	}
+	var head struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(ev.Data), &head) == nil {
+		return head.Type
+	}
+	return ""
 }
 
 func completeSSEFrameIndex(data []byte) (int, int) {
