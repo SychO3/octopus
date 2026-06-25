@@ -102,6 +102,7 @@ func (o *MessageOutbound) TransformRequestRaw(ctx context.Context, rawBody []byt
 	}
 	rawBody = stripEmptySignatureThinkingBlocks(rawBody)
 	rawBody = mirrorToolResultImages(rawBody)
+	rawBody = ensureRawToolChoiceAuto(rawBody)
 	if strings.TrimSpace(modelName) != "" {
 		rewrittenBody, err := rewriteRawRequestModel(rawBody, modelName)
 		if err != nil {
@@ -157,6 +158,30 @@ func rawAnthropicRequestStream(rawBody []byte) bool {
 		return false
 	}
 	return payload.Stream
+}
+
+func ensureRawToolChoiceAuto(rawBody []byte) []byte {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &root); err != nil {
+		return rawBody
+	}
+	if _, exists := root["tool_choice"]; exists {
+		return rawBody
+	}
+	toolsRaw, ok := root["tools"]
+	if !ok || len(bytes.TrimSpace(toolsRaw)) == 0 || bytes.Equal(bytes.TrimSpace(toolsRaw), []byte("null")) {
+		return rawBody
+	}
+	var tools []json.RawMessage
+	if err := json.Unmarshal(toolsRaw, &tools); err != nil || len(tools) == 0 {
+		return rawBody
+	}
+	root["tool_choice"] = json.RawMessage(`{"type":"auto"}`)
+	rewritten, err := json.Marshal(root)
+	if err != nil {
+		return rawBody
+	}
+	return rewritten
 }
 
 func mirrorToolResultImages(rawBody []byte) []byte {

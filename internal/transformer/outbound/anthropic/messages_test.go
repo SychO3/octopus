@@ -78,6 +78,62 @@ func TestTransformRequestRawUsesClaudeCodeBetaBaseline(t *testing.T) {
 	}
 }
 
+func TestTransformRequestRawAddsToolChoiceAutoWhenToolsPresent(t *testing.T) {
+	outbound := &MessageOutbound{}
+	req, err := outbound.TransformRequestRaw(
+		context.Background(),
+		[]byte(`{"model":"internal-alias","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}`),
+		"claude-3-5-sonnet-20241022",
+		"https://example.com/v1",
+		"test-key",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("TransformRequestRaw() error = %v", err)
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(req.Body) error = %v", err)
+	}
+	var payload struct {
+		ToolChoice *anthropicModel.ToolChoice `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v; body=%s", err, string(body))
+	}
+	if payload.ToolChoice == nil || payload.ToolChoice.Type != "auto" {
+		t.Fatalf("expected tool_choice auto, got %+v in %s", payload.ToolChoice, string(body))
+	}
+}
+
+func TestTransformRequestRawPreservesExistingToolChoice(t *testing.T) {
+	outbound := &MessageOutbound{}
+	req, err := outbound.TransformRequestRaw(
+		context.Background(),
+		[]byte(`{"model":"internal-alias","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"}}`),
+		"claude-3-5-sonnet-20241022",
+		"https://example.com/v1",
+		"test-key",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("TransformRequestRaw() error = %v", err)
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(req.Body) error = %v", err)
+	}
+	var payload struct {
+		ToolChoice *anthropicModel.ToolChoice `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v; body=%s", err, string(body))
+	}
+	if payload.ToolChoice == nil || payload.ToolChoice.Type != "any" {
+		t.Fatalf("expected existing tool_choice any to survive, got %+v in %s", payload.ToolChoice, string(body))
+	}
+}
+
 func TestTransformRequestRawStreamAcceptsSSE(t *testing.T) {
 	outbound := &MessageOutbound{}
 	req, err := outbound.TransformRequestRaw(
