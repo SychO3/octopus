@@ -34,6 +34,9 @@ func populateGroupRatiosFromPricing(ctx context.Context, siteRecord *model.Site,
 	for i := range groups {
 		if ratio := jsonFloat(ratioMap[groups[i].GroupKey]); ratio > 0 {
 			groups[i].GroupRatio = ratio
+		} else if _, exists := ratioMap[groups[i].GroupKey]; !exists {
+			// 上游未列出的分组使用默认倍率 1.0（new-api 只列出显式配置过的分组）
+			groups[i].GroupRatio = 1.0
 		}
 	}
 }
