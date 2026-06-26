@@ -295,6 +295,9 @@ func isSiteGroupProjectionActive(siteRecord *model.Site, account *model.SiteAcco
 	if group.ProjectionDisabled || group.ProjectionSuspended {
 		return false
 	}
+	if group.GroupRatio < 0 {
+		return false
+	}
 	if limit, err := op.SettingGetInt(model.SettingKeyGroupRatioLimit); err == nil && limit > 0 && group.GroupRatio > float64(limit) {
 		return false
 	}
@@ -315,6 +318,9 @@ func isSiteGroupProjectionSystemPaused(group model.SiteUserGroup) bool {
 		return false
 	}
 	if group.ProjectionSuspended {
+		return true
+	}
+	if group.GroupRatio < 0 {
 		return true
 	}
 	if limit, err := op.SettingGetInt(model.SettingKeyGroupRatioLimit); err == nil && limit > 0 && group.GroupRatio > float64(limit) {
