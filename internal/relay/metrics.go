@@ -349,6 +349,12 @@ func modelPriceCandidates(modelName string) []string {
 		add(strings.ReplaceAll(candidate, ".", "-"))
 		add(modelVersionDotPattern.ReplaceAllString(candidate, `-$1.$2$3`))
 	}
+	// -thinking 后缀继承：对所有候选项，去掉 -thinking 后缀作为额外候选
+	for _, candidate := range append([]string(nil), candidates...) {
+		if base, found := strings.CutSuffix(candidate, "-thinking"); found {
+			add(base)
+		}
+	}
 	return candidates
 }
 

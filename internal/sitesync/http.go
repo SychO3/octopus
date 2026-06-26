@@ -104,6 +104,19 @@ func requestJSON(ctx context.Context, siteRecord *model.Site, method string, req
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		return nil, formatSiteDecodeError(resp.Header.Get("Content-Type"), bodyBytes, err)
 	}
+	// 部分站点在 token 过期/无权限时仍返回 HTTP 200 + {"success": false, "message": "..."}
+	// 仅当消息明确指向认证/权限失败时才视为错误，避免误拦截签到等正常业务响应
+	if successVal, ok := payload["success"]; ok {
+		if success, isBool := successVal.(bool); isBool && !success {
+			msg := extractSiteResponseMessage(payload)
+			if isSiteAuthFailureMessage(msg) {
+				if msg == "" {
+					msg = "upstream returned success=false"
+				}
+				return nil, newSiteHTTPError(resp.StatusCode, msg)
+			}
+		}
+	}
 	return payload, nil
 }
 
@@ -185,6 +198,25 @@ func extractSiteResponseMessage(payload map[string]any) string {
 		jsonString(nestedValue(payload, "error", "message")),
 		jsonString(payload["msg"]),
 	)
+}
+
+// isSiteAuthFailureMessage 判断 success=false 的 message 是否指向认证/权限失败
+func isSiteAuthFailureMessage(msg string) bool {
+	lowered := strings.ToLower(strings.TrimSpace(msg))
+	if lowered == "" {
+		return false
+	}
+	return strings.Contains(lowered, "unauthorized") ||
+		strings.Contains(lowered, "forbidden") ||
+		strings.Contains(lowered, "invalid token") ||
+		strings.Contains(lowered, "invalid access token") ||
+		strings.Contains(lowered, "not logged in") ||
+		strings.Contains(lowered, "permission denied") ||
+		strings.Contains(lowered, "access denied") ||
+		strings.Contains(lowered, "token expired") ||
+		strings.Contains(msg, "未登录") ||
+		strings.Contains(msg, "过期") ||
+		strings.Contains(msg, "无权")
 }
 
 func extractSiteHTMLResponseSummary(contentType string, bodyBytes []byte) string {

@@ -15,6 +15,7 @@ import {
     RefreshCw,
     Search,
     SlidersHorizontal,
+    Trash2,
     WandSparkles,
     X
 } from 'lucide-react';
@@ -42,6 +43,8 @@ import { useChannelTabStore } from '@/components/modules/channel/tab-store';
 import { useTranslations } from 'next-intl';
 import { useSearchStore } from './search-store';
 import { ToolbarMenu, type ToolbarAction } from './ToolbarMenu';
+import { useCleanModels } from '@/api/endpoints/model';
+import { toast } from '@/components/common/Toast';
 import {
     useToolbarViewOptionsStore,
     TOOLBAR_PAGES,
@@ -130,6 +133,8 @@ export function Toolbar() {
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
     const [autoGroupDialogOpen, setAutoGroupDialogOpen] = useState(false);
 
+    const cleanModels = useCleanModels();
+
     const searchExpanded = expandedSearchItem === toolbarItem;
 
     const isLogToolbar = toolbarItem === 'log';
@@ -214,6 +219,23 @@ export function Toolbar() {
                 onClick: () => setCreateDialogOpen(true),
                 priority: 'desktop',
             });
+            result.push({
+                id: 'clean-model',
+                icon: <Trash2 className="size-4" />,
+                label: '清理无价格',
+                onClick: () => {
+                    cleanModels.mutate(undefined, {
+                        onSuccess: (data) => {
+                            toast.success(`已清理 ${data.count} 个无价格模型`);
+                        },
+                        onError: (error) => {
+                            toast.error('清理失败', { description: error.message });
+                        },
+                    });
+                },
+                disabled: cleanModels.isPending,
+                priority: 'desktop',
+            });
         }
 
         // 日志页面按钮
@@ -239,6 +261,7 @@ export function Toolbar() {
         openCompletionDialog,
         requestLogRefresh,
         tProxyPool,
+        cleanModels,
     ]);
 
     if (!toolbarItem) return null;

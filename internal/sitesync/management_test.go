@@ -1041,6 +1041,7 @@ func TestSyncManagementPlatformAddsHeuristicResponsesForGPT5(t *testing.T) {
 		case r.URL.Path == "/v1/models":
 			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.4"}]}`))
 		case r.URL.Path == "/api/pricing":
+			// 上游显式声明 chat，不应被启发式覆盖为 response
 			_, _ = w.Write([]byte(`{"data":[
 				{"model_name":"gpt-5.4","supported_endpoint_types":["/v1/chat/completions"]}
 			]}`))
@@ -1069,8 +1070,9 @@ func TestSyncManagementPlatformAddsHeuristicResponsesForGPT5(t *testing.T) {
 	if len(snapshot.models) != 1 {
 		t.Fatalf("expected one synced model, got %+v", snapshot.models)
 	}
-	if snapshot.models[0].RouteType != model.SiteModelRouteTypeOpenAIResponse {
-		t.Fatalf("expected gpt-5.4 route type %q, got %q", model.SiteModelRouteTypeOpenAIResponse, snapshot.models[0].RouteType)
+	// 新逻辑：上游显式声明了 /v1/chat/completions，不再启发式补充 Response
+	if snapshot.models[0].RouteType != model.SiteModelRouteTypeOpenAIChat {
+		t.Fatalf("expected gpt-5.4 route type %q (respecting upstream declaration), got %q", model.SiteModelRouteTypeOpenAIChat, snapshot.models[0].RouteType)
 	}
 	metadata, ok := model.ParseSiteModelRouteMetadata(snapshot.models[0].RouteRawPayload)
 	if !ok {
@@ -1079,7 +1081,7 @@ func TestSyncManagementPlatformAddsHeuristicResponsesForGPT5(t *testing.T) {
 	if len(metadata.SupportedEndpointTypes) != 1 || metadata.SupportedEndpointTypes[0] != "/v1/chat/completions" {
 		t.Fatalf("expected upstream endpoint types to remain chat-only, got %#v", metadata.SupportedEndpointTypes)
 	}
-	if len(metadata.HeuristicEndpointTypes) != 1 || metadata.HeuristicEndpointTypes[0] != "/v1/responses" {
-		t.Fatalf("expected heuristic endpoint types to record injected responses support, got %#v", metadata.HeuristicEndpointTypes)
+	if len(metadata.HeuristicEndpointTypes) != 0 {
+		t.Fatalf("expected no heuristic endpoint types when upstream declares explicitly, got %#v", metadata.HeuristicEndpointTypes)
 	}
 }

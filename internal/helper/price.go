@@ -14,14 +14,12 @@ func LLMPriceAddToDB(modelNames []string, ctx context.Context) error {
 		if modelName == "" {
 			continue
 		}
-		modelPrice := price.GetLLMPrice(modelName)
+		canonicalName, modelPrice := price.GetLLMPriceWithCanonicalName(modelName)
 		if modelPrice != nil {
 			newLLMInfos = append(newLLMInfos, model.LLMInfo{
-				Name:     modelName,
+				Name:     canonicalName,
 				LLMPrice: *modelPrice,
 			})
-		} else {
-			newLLMInfos = append(newLLMInfos, model.LLMInfo{Name: modelName})
 		}
 	}
 	if len(newLLMInfos) > 0 {

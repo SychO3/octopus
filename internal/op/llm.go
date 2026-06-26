@@ -3,6 +3,7 @@ package op
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/bestruirui/octopus/internal/db"
@@ -102,6 +103,40 @@ func LLMGet(name string) (model.LLMPrice, error) {
 		return model.LLMPrice{}, fmt.Errorf("model not found")
 	}
 	return price, nil
+}
+
+var versionDashPattern = regexp.MustCompile(`-(\d+)-(\d+)(-|$)`)
+
+func LLMCleanNoPrice(ctx context.Context) (int, error) {
+	all := llmModelCache.GetAll()
+	toDelete := make(map[string]struct{})
+
+	for name, p := range all {
+		// 1. 清理无价格模型
+		if p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0 {
+			toDelete[name] = struct{}{}
+		}
+
+		// 2. 清理点↔杠重复：如果本条是横杠版本，且点版本也存在，删除本条
+		dotted := versionDashPattern.ReplaceAllString(name, `-$1.$2$3`)
+		if dotted != name {
+			if _, exists := all[dotted]; exists {
+				toDelete[name] = struct{}{}
+			}
+		}
+	}
+
+	if len(toDelete) == 0 {
+		return 0, nil
+	}
+	names := make([]string, 0, len(toDelete))
+	for n := range toDelete {
+		names = append(names, n)
+	}
+	if err := LLMBatchDelete(names, ctx); err != nil {
+		return 0, err
+	}
+	return len(names), nil
 }
 
 func llmRefreshCache(ctx context.Context) error {

@@ -1342,28 +1342,40 @@ export function Site() {
     return () => window.clearTimeout(timer);
   }, [pendingSiteJump, visibleSites, clearPendingJump, flashTarget]);
 
-  const masonryColumns = useMemo<[VisibleSite[], VisibleSite[]]>(() => {
-    const left: VisibleSite[] = [];
-    const right: VisibleSite[] = [];
+  // 稳定的列分配：仅在站点列表变化时重新分配，展开/折叠时不跨列移动
+  const masonryColumnAssignment = useMemo<Record<number, 0 | 1>>(() => {
+    const assignment: Record<number, 0 | 1> = {};
     let leftHeight = 0;
     let rightHeight = 0;
 
     for (const item of visibleSites) {
-      const isExpanded = item.forceExpanded || expandedSiteIds.has(item.site.id);
-      const estimatedHeight =
-        siteCardHeights[item.site.id] ??
-        estimateVisibleSiteCardHeight(item, isExpanded);
+      const estimatedHeight = estimateVisibleSiteCardHeight(item, false);
       if (leftHeight <= rightHeight) {
-        left.push(item);
+        assignment[item.site.id] = 0;
         leftHeight += estimatedHeight;
       } else {
-        right.push(item);
+        assignment[item.site.id] = 1;
         rightHeight += estimatedHeight;
       }
     }
 
+    return assignment;
+  }, [visibleSites]);
+
+  const masonryColumns = useMemo<[VisibleSite[], VisibleSite[]]>(() => {
+    const left: VisibleSite[] = [];
+    const right: VisibleSite[] = [];
+
+    for (const item of visibleSites) {
+      if (masonryColumnAssignment[item.site.id] === 1) {
+        right.push(item);
+      } else {
+        left.push(item);
+      }
+    }
+
     return [left, right];
-  }, [visibleSites, expandedSiteIds, siteCardHeights]);
+  }, [visibleSites, masonryColumnAssignment]);
 
   const renderSiteCard = ({
     site,

@@ -412,10 +412,11 @@ func buildSiteModelRouteDetection(
 }
 
 func inferHeuristicEndpointTypes(modelName string, supportedEndpointTypes []string) []string {
-	if !shouldHeuristicallyAddOpenAIResponse(modelName) {
+	// 上游已显式声明了支持的端点类型时，信任上游声明，不再启发式猜测
+	if len(supportedEndpointTypes) > 0 {
 		return nil
 	}
-	if explicitSupportsResponse(supportedEndpointTypes) {
+	if !shouldHeuristicallyAddOpenAIResponse(modelName) {
 		return nil
 	}
 	return []string{"/v1/responses"}

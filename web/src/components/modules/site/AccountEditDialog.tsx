@@ -10,7 +10,7 @@ import {
     type ReactNode,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { CalendarCheck2, RefreshCw, UserRound, XIcon } from 'lucide-react';
+import { CalendarCheck2, Copy, RefreshCw, UserRound, XIcon } from 'lucide-react';
 import { AnimatePresence, motion, type Transition } from 'motion/react';
 import {
     Dialog,
@@ -596,11 +596,26 @@ export function AccountEditDialog({ open, onOpenChange, site, account }: Account
                                                             />
                                                         </label>
                                                     </div>
-                                                    <span className="text-xs text-muted-foreground">
-                                                        Sub2API 推荐同时填写 F12 里的 <code>refresh_token</code>{' '}
-                                                        与 <code>token_expires_at</code>，会在快过期或 401
-                                                        时自动续期。
-                                                    </span>
+                                                    <div className="flex items-start gap-2">
+                                                        <span className="text-xs text-muted-foreground">
+                                                            Sub2API 推荐同时填写 F12 里的 <code>refresh_token</code>{' '}
+                                                            与 <code>token_expires_at</code>，会在快过期或 401
+                                                            时自动续期。
+                                                        </span>
+                                                        <button
+                                                            type="button"
+                                                            className="shrink-0 rounded-lg border border-border/60 p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                                            title="复制获取脚本到剪贴板"
+                                                            onClick={() => {
+                                                                const script = `JSON.stringify({refresh_token: localStorage.getItem('refresh_token'), token_expires_at: localStorage.getItem('token_expires_at')})`;
+                                                                navigator.clipboard.writeText(script).then(() => {
+                                                                    toast.success('已复制脚本，请在站点 F12 控制台中执行');
+                                                                });
+                                                            }}
+                                                        >
+                                                            <Copy className="size-3.5" />
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             ) : null}
 

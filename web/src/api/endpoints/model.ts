@@ -192,10 +192,10 @@ export function useUpdateModelPrice() {
 
 /**
  * 获取 LLM 模型价格最后更新时间 Hook
- * 
+ *
  * @example
  * const { data: lastUpdateTime } = useLastUpdateTime();
- * 
+ *
  * if (lastUpdateTime) {
  *   console.log('最后更新:', new Date(lastUpdateTime).toLocaleString());
  * }
@@ -207,5 +207,28 @@ export function useLastUpdateTime() {
             return apiClient.get<string>('/api/v1/model/last-update-time');
         },
         refetchInterval: 30000,
+    });
+}
+
+/**
+ * 一键清理无价格模型 Hook
+ *
+ * @example
+ * const cleanModels = useCleanModels();
+ * cleanModels.mutate(); // 删除所有价格为 0 的模型
+ */
+export function useCleanModels() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async () => {
+            return apiClient.post<{ count: number }>('/api/v1/model/clean', {});
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+        },
+        onError: (error) => {
+            logger.error('清理无价格模型失败:', error);
+        },
     });
 }

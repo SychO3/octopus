@@ -55,6 +55,7 @@ func TestPickPreferredDetectedRouteType(t *testing.T) {
 }
 
 func TestBuildSiteModelRouteDetectionAddsHeuristicResponsesForGPT5(t *testing.T) {
+	// 上游显式声明了 supported_endpoint_types 时，不再启发式补充 Response
 	detection, ok := buildSiteModelRouteDetection(
 		"gpt-5.4",
 		nil,
@@ -63,24 +64,40 @@ func TestBuildSiteModelRouteDetectionAddsHeuristicResponsesForGPT5(t *testing.T)
 		map[string]struct{}{"gpt-5.4": {}},
 	)
 	if !ok {
-		t.Fatalf("expected heuristic response detection to be produced")
+		t.Fatalf("expected detection to be produced")
 	}
 
 	metadata, ok := model.ParseSiteModelRouteMetadata(detection.RouteRawPayload)
 	if !ok {
 		t.Fatalf("expected route metadata to parse")
 	}
-	if metadata.RouteType != model.SiteModelRouteTypeOpenAIResponse {
-		t.Fatalf("expected heuristic detection route type %q, got %q", model.SiteModelRouteTypeOpenAIResponse, metadata.RouteType)
+	if metadata.RouteType != model.SiteModelRouteTypeOpenAIChat {
+		t.Fatalf("expected detection route type %q when upstream declares chat, got %q", model.SiteModelRouteTypeOpenAIChat, metadata.RouteType)
 	}
-	if len(metadata.SupportedEndpointTypes) != 1 || metadata.SupportedEndpointTypes[0] != "/v1/chat/completions" {
-		t.Fatalf("expected upstream endpoint list to remain intact, got %#v", metadata.SupportedEndpointTypes)
+	if len(metadata.HeuristicEndpointTypes) != 0 {
+		t.Fatalf("expected no heuristic endpoint types when upstream declares explicitly, got %#v", metadata.HeuristicEndpointTypes)
 	}
-	if len(metadata.HeuristicEndpointTypes) != 1 || metadata.HeuristicEndpointTypes[0] != "/v1/responses" {
-		t.Fatalf("expected heuristic endpoint list to record injected response support, got %#v", metadata.HeuristicEndpointTypes)
+
+	// 上游未声明任何 supported_endpoint_types 时，对 gpt-5 启发式补充 Response
+	detection2, ok := buildSiteModelRouteDetection(
+		"gpt-5.4",
+		[]string{"default"},
+		nil,
+		"/api/pricing",
+		map[string]struct{}{"gpt-5.4": {}},
+	)
+	if !ok {
+		t.Fatalf("expected heuristic detection to be produced when no endpoint types declared")
 	}
-	if len(metadata.NormalizedEndpointTypes) != 2 {
-		t.Fatalf("expected normalized endpoint list to include explicit and heuristic routes, got %#v", metadata.NormalizedEndpointTypes)
+	metadata2, ok := model.ParseSiteModelRouteMetadata(detection2.RouteRawPayload)
+	if !ok {
+		t.Fatalf("expected route metadata to parse")
+	}
+	if metadata2.RouteType != model.SiteModelRouteTypeOpenAIResponse {
+		t.Fatalf("expected heuristic route type %q when upstream declares nothing, got %q", model.SiteModelRouteTypeOpenAIResponse, metadata2.RouteType)
+	}
+	if len(metadata2.HeuristicEndpointTypes) != 1 || metadata2.HeuristicEndpointTypes[0] != "/v1/responses" {
+		t.Fatalf("expected heuristic endpoint list to record injected response, got %#v", metadata2.HeuristicEndpointTypes)
 	}
 }
 

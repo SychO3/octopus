@@ -742,6 +742,17 @@ func rewriteManagedGroupItemsForAccount(ctx context.Context, siteRecord *model.S
 		if targetChannelID == item.ChannelID {
 			continue
 		}
+		// 检查目标渠道是否已有相同 (group_id, model_name) 的记录，
+		// 如果已存在则删除当前 item 而非移动（避免 UNIQUE 约束冲突）
+		var existingCount int64
+		db.GetDB().WithContext(ctx).Model(&model.GroupItem{}).
+			Where("group_id = ? AND channel_id = ? AND model_name = ?", item.GroupID, targetChannelID, item.ModelName).
+			Count(&existingCount)
+		if existingCount > 0 {
+			deleteItemIDs = append(deleteItemIDs, item.ID)
+			affectedGroupIDs[item.GroupID] = struct{}{}
+			continue
+		}
 		if err := db.GetDB().WithContext(ctx).Model(&model.GroupItem{}).Where("id = ?", item.ID).Update("channel_id", targetChannelID).Error; err != nil {
 			return fmt.Errorf("failed to rewrite group item %d: %w", item.ID, err)
 		}
