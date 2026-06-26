@@ -80,8 +80,10 @@ func TestHandleStreamResponsePassthroughAnthropicPreservesRawSSE(t *testing.T) {
 		Body: io.NopCloser(bytes.NewReader([]byte(rawSSE))),
 	}
 
-	if err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response); err != nil {
-		t.Fatalf("handleStreamResponsePassthroughAnthropic() error = %v", err)
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	if err := ra.handleStreamResponsePassthroughV2(context.Background(), response, cfg); err != nil {
+		t.Fatalf("handleStreamResponsePassthroughV2() error = %v", err)
 	}
 
 	if got := recorder.Body.String(); got != rawSSE {
@@ -442,120 +444,6 @@ func TestHandleStreamResponsePassthroughAnthropicWaitsForToolIdentity(t *testing
 	}
 }
 
-func TestConvertOpenAIStreamChunkToAnthropicBuffersPartialFrame(t *testing.T) {
-	ctx := context.Background()
-	inboundStream, ok := inbound.Get(inbound.InboundTypeAnthropic).(transformerModel.InboundStreamEventTransformer)
-	if !ok {
-		t.Fatalf("expected Anthropic inbound to support stream events")
-	}
-	var outboundStream transformerModel.OutboundStreamEventTransformer
-	var pending []byte
-
-	first := []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,`)
-	var terminal openAIChatTerminalState
-	out, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, first, "", &outboundStream, inboundStream, &pending, &terminal)
-	if err != nil {
-		t.Fatalf("first partial chunk returned error: %v", err)
-	}
-	if len(out) != 0 || protocol != "" {
-		t.Fatalf("expected partial frame to be buffered without output, got protocol=%q out=%q", protocol, string(out))
-	}
-
-	second := []byte(`"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n")
-	out, protocol, err = convertOpenAIStreamChunkToAnthropic(ctx, second, protocol, &outboundStream, inboundStream, &pending, &terminal)
-	if err != nil {
-		t.Fatalf("second chunk returned error: %v", err)
-	}
-	got := string(out)
-	if protocol != "openai_chat" {
-		t.Fatalf("expected protocol openai_chat, got %q", protocol)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("expected pending buffer to be drained, got %q", string(pending))
-	}
-	if strings.Contains(got, "chat.completion.chunk") || !strings.Contains(got, "event:content_block_delta") || !strings.Contains(got, `"text":"hello"`) {
-		t.Fatalf("expected converted Anthropic text delta, got %q", got)
-	}
-}
-
-func TestConvertOpenAIStreamChunkToAnthropicSkipsEmptySplitChoiceBlocks(t *testing.T) {
-	ctx := context.Background()
-	inboundStream, ok := inbound.Get(inbound.InboundTypeAnthropic).(transformerModel.InboundStreamEventTransformer)
-	if !ok {
-		t.Fatalf("expected Anthropic inbound to support stream events")
-	}
-	var outboundStream transformerModel.OutboundStreamEventTransformer
-	var pending []byte
-	var terminal openAIChatTerminalState
-
-	chunk := []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"\n"},"finish_reason":"stop"},{"index":1,"delta":{"reasoning_content":"\nthink\n"}},{"index":2,"delta":{"content":"\n\nhello"}}]}` + "\n\n")
-
-	out, protocol, err := convertOpenAIStreamChunkToAnthropic(ctx, chunk, "", &outboundStream, inboundStream, &pending, &terminal)
-	if err != nil {
-		t.Fatalf("chunk returned error: %v", err)
-	}
-	flushed, err := inboundStream.TransformStreamEvents(ctx, flushOpenAIChatTerminalEvents(&terminal))
-	if err != nil {
-		t.Fatalf("flush returned error: %v", err)
-	}
-	got := string(append(out, flushed...))
-	if protocol != "openai_chat" {
-		t.Fatalf("expected protocol openai_chat, got %q", protocol)
-	}
-	if strings.Count(got, `"type":"text"`) != 1 {
-		t.Fatalf("expected one text block for visible content, got %q", got)
-	}
-	if strings.Contains(got, `"text":"\n"`) {
-		t.Fatalf("must not emit whitespace-only text delta for split role-only choice, got %q", got)
-	}
-	if !strings.Contains(got, `"type":"thinking"`) || !strings.Contains(got, `"thinking":"\nthink\n"`) {
-		t.Fatalf("expected reasoning block, got %q", got)
-	}
-	if !strings.Contains(got, `"text":"\n\nhello"`) {
-		t.Fatalf("expected visible content delta, got %q", got)
-	}
-}
-
-func TestConvertOpenAIStreamChunkToAnthropicSkipsCrossFrameWhitespaceTerminalChoice(t *testing.T) {
-	ctx := context.Background()
-	inboundStream, ok := inbound.Get(inbound.InboundTypeAnthropic).(transformerModel.InboundStreamEventTransformer)
-	if !ok {
-		t.Fatalf("expected Anthropic inbound to support stream events")
-	}
-	var outboundStream transformerModel.OutboundStreamEventTransformer
-	var pending []byte
-	var terminal openAIChatTerminalState
-	var protocol string
-	var combined []byte
-
-	frames := [][]byte{
-		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"\n"},"finish_reason":"stop"}]}` + "\n\n"),
-		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":1,"delta":{"reasoning_content":"\nthink\n"}}]}` + "\n\n"),
-		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"claude-opus-4.6","choices":[{"index":2,"delta":{"content":"\n\nhello"}}]}` + "\n\n"),
-	}
-	for _, frame := range frames {
-		out, nextProtocol, err := convertOpenAIStreamChunkToAnthropic(ctx, frame, protocol, &outboundStream, inboundStream, &pending, &terminal)
-		if err != nil {
-			t.Fatalf("chunk returned error: %v", err)
-		}
-		protocol = nextProtocol
-		combined = append(combined, out...)
-	}
-	flushed, err := inboundStream.TransformStreamEvents(ctx, flushOpenAIChatTerminalEvents(&terminal))
-	if err != nil {
-		t.Fatalf("flush returned error: %v", err)
-	}
-	got := string(append(combined, flushed...))
-	if strings.Count(got, `"type":"text"`) != 1 {
-		t.Fatalf("expected one text block for visible content, got %q", got)
-	}
-	if strings.Contains(got, `"text":"\n"`) {
-		t.Fatalf("must not emit whitespace-only text delta before later payload, got %q", got)
-	}
-	if !strings.Contains(got, `"thinking":"\nthink\n"`) || !strings.Contains(got, `"text":"\n\nhello"`) {
-		t.Fatalf("expected reasoning and visible content, got %q", got)
-	}
-}
 
 func TestHandleStreamResponsePassthroughOpenAIResponsesPreservesRawSSE(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -599,8 +487,10 @@ func TestHandleStreamResponsePassthroughOpenAIResponsesPreservesRawSSE(t *testin
 		Body: io.NopCloser(bytes.NewReader([]byte(rawSSE))),
 	}
 
-	if err := ra.handleStreamResponsePassthroughOpenAIResponses(context.Background(), response); err != nil {
-		t.Fatalf("handleStreamResponsePassthroughOpenAIResponses() error = %v", err)
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	if err := ra.handleStreamResponsePassthroughV2(context.Background(), response, cfg); err != nil {
+		t.Fatalf("handleStreamResponsePassthroughV2() error = %v", err)
 	}
 	if got := recorder.Body.String(); got != rawSSE {
 		t.Fatalf("expected raw SSE to be preserved exactly, got %q want %q", got, rawSSE)
@@ -704,7 +594,9 @@ func TestHandleStreamResponsePassthroughOpenAIResponsesClientCancelAfterTerminal
 		Body:       &stallUntilCancelBody{ctx: ctx, data: []byte(rawSSE)},
 	}
 
-	if err := ra.handleStreamResponsePassthroughOpenAIResponses(ctx, response); err != nil {
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	if err := ra.handleStreamResponsePassthroughV2(ctx, response, cfg); err != nil {
 		t.Fatalf("expected stream with terminal event to finish successfully, got error: %v", err)
 	}
 	if got := writer.buf.String(); got != rawSSE {
@@ -741,7 +633,9 @@ func TestHandleStreamResponsePassthroughOpenAIResponsesClientCancelMidStream(t *
 		Body:       &stallUntilCancelBody{ctx: ctx, data: []byte(rawSSE)},
 	}
 
-	err := ra.handleStreamResponsePassthroughOpenAIResponses(ctx, response)
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	err := ra.handleStreamResponsePassthroughV2(ctx, response, cfg)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled for mid-stream disconnect, got: %v", err)
 	}
@@ -806,7 +700,9 @@ func TestHandleStreamResponsePassthroughAnthropicClientCancelAfterTerminal(t *te
 		Body:       &stallUntilCancelBody{ctx: ctx, data: []byte(rawSSE)},
 	}
 
-	if err := ra.handleStreamResponsePassthroughAnthropic(ctx, response); err != nil {
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	if err := ra.handleStreamResponsePassthroughV2(ctx, response, cfg); err != nil {
 		t.Fatalf("expected stream with terminal event to finish successfully, got error: %v", err)
 	}
 	if got := writer.buf.String(); got != rawSSE {

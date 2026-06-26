@@ -15,6 +15,7 @@ type SSESource struct {
 	events    chan sseReadResult
 	done      chan struct{}
 	closeOnce sync.Once
+	closeErr  error
 }
 
 type sseReadResult struct {
@@ -76,9 +77,9 @@ func (s *SSESource) ReadEvent(ctx context.Context) ([]byte, error) {
 func (s *SSESource) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		if s.reader != nil {
+			s.closeErr = s.reader.Close()
+		}
 	})
-	if s.reader != nil {
-		return s.reader.Close()
-	}
-	return nil
+	return s.closeErr
 }

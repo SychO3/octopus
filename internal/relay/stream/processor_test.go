@@ -7,14 +7,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
 // mockStreamWriter implements StreamWriter for testing.
 type mockStreamWriter struct {
-	mu      sync.Mutex
 	buffer  bytes.Buffer
 	written bool
 	headers http.Header
@@ -27,8 +25,6 @@ func newMockStreamWriter() *mockStreamWriter {
 }
 
 func (m *mockStreamWriter) Write(data []byte) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.written = true
 	return m.buffer.Write(data)
 }
@@ -36,8 +32,6 @@ func (m *mockStreamWriter) Write(data []byte) (int, error) {
 func (m *mockStreamWriter) Flush() {}
 
 func (m *mockStreamWriter) Written() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	return m.written
 }
 
@@ -47,15 +41,8 @@ func (m *mockStreamWriter) Header() http.Header {
 
 func (m *mockStreamWriter) WriteHeader(code int) {}
 
-func (m *mockStreamWriter) String() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.buffer.String()
-}
-
 // mockStreamSource implements StreamSource for testing.
 type mockStreamSource struct {
-	mu     sync.Mutex
 	events [][]byte
 	index  int
 	closed bool
@@ -75,16 +62,8 @@ func (m *mockStreamSource) ReadEvent(ctx context.Context) ([]byte, error) {
 }
 
 func (m *mockStreamSource) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.closed = true
 	return nil
-}
-
-func (m *mockStreamSource) isClosed() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.closed
 }
 
 func TestStreamProcessor_BasicFlow(t *testing.T) {
@@ -109,11 +88,11 @@ func TestStreamProcessor_BasicFlow(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !source.isClosed() {
+	if !source.closed {
 		t.Error("source not closed")
 	}
 
-	output := writer.String()
+	output := writer.buffer.String()
 	for _, event := range events {
 		if !strings.Contains(output, string(event)) {
 			t.Errorf("output missing event: %s", event)
@@ -148,7 +127,7 @@ func TestStreamProcessor_WithTransform(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := writer.String()
+	output := writer.buffer.String()
 	expected := "data: chunk1\n\ndata: chunk2\n\n"
 	if output != expected {
 		t.Errorf("unexpected output:\ngot:  %q\nwant: %q", output, expected)
@@ -201,38 +180,37 @@ func TestStreamProcessor_EmptyStream(t *testing.T) {
 		t.Fatal("expected error for empty stream")
 	}
 
-	if !strings.Contains(err.Error(), "without forwarding any payload") {
-		t.Errorf("unexpected error: %v", err)
+	if !errors.Is(err, ErrEmptyUpstreamStream) {
+		t.Errorf("expected ErrEmptyUpstreamStream, got: %v", err)
 	}
 }
 
 func TestStreamProcessor_ContextCancellation(t *testing.T) {
-	events := [][]byte{
-		[]byte(`chunk1`),
-		[]byte(`chunk2`),
-		[]byte(`chunk3`),
-	}
-
-	source := newMockStreamSource(events)
+	// Source that emits one chunk then blocks until cancelled
+	source := &cancelTestSource{first: []byte(`chunk1`)}
 	writer := newMockStreamWriter()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Cancel after first chunk
-	transform := func(ctx context.Context, data []byte) ([]byte, error) {
-		if strings.Contains(string(data), "chunk1") {
-			cancel()
-		}
-		return data, nil
-	}
-
+	firstTokenSeen := make(chan struct{})
 	processor := NewStreamProcessor(StreamConfig{
-		Source:    source,
-		Writer:    writer,
-		Context:   ctx,
-		Transform: transform,
+		Source:  source,
+		Writer:  writer,
+		Context: ctx,
+		OnFirstToken: func() {
+			close(firstTokenSeen)
+		},
 	})
 
-	err := processor.Run()
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- processor.Run()
+	}()
+
+	// Wait until first token is processed, then cancel
+	<-firstTokenSeen
+	cancel()
+
+	err := <-errChan
 	if err == nil {
 		t.Fatal("expected context cancellation error")
 	}
@@ -240,6 +218,27 @@ func TestStreamProcessor_ContextCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got: %v", err)
 	}
+}
+
+// cancelTestSource emits one chunk then blocks until context is cancelled.
+type cancelTestSource struct {
+	first  []byte
+	sent   bool
+	closed bool
+}
+
+func (s *cancelTestSource) ReadEvent(ctx context.Context) ([]byte, error) {
+	if !s.sent {
+		s.sent = true
+		return s.first, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (s *cancelTestSource) Close() error {
+	s.closed = true
+	return nil
 }
 
 func TestStreamProcessor_BufferRawStream(t *testing.T) {
@@ -279,7 +278,8 @@ func TestStreamProcessor_FirstTokenTimeout(t *testing.T) {
 	// Source that blocks forever
 	blockingSource := &blockingStreamSource{}
 	writer := newMockStreamWriter()
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	processor := NewStreamProcessor(StreamConfig{
 		Source:            blockingSource,
@@ -330,12 +330,16 @@ data: {"type":"message_stop"}
 		"message_stop": {},
 	}
 
+	firstTokenSeen := make(chan struct{})
 	processor := NewStreamProcessor(StreamConfig{
 		Source:          source,
 		Writer:          writer,
 		Context:         ctx,
 		BufferRawStream: true,
 		TerminalEvents:  terminalEvents,
+		OnFirstToken: func() {
+			close(firstTokenSeen)
+		},
 	})
 
 	// Start processor in goroutine
@@ -344,10 +348,8 @@ data: {"type":"message_stop"}
 		errChan <- processor.Run()
 	}()
 
-	// Let first chunk write
-	time.Sleep(5 * time.Millisecond)
-
-	// Cancel context (simulate client disconnect)
+	// Wait until first token is written, then cancel
+	<-firstTokenSeen
 	cancel()
 
 	// Should treat as success because terminal event was reached

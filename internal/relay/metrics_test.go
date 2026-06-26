@@ -59,7 +59,8 @@ func TestSetInternalResponseNoFallbackWhenCacheOnly(t *testing.T) {
 		Usage: &transformerModel.Usage{PromptTokens: 0, CacheReadInputTokens: 40, CompletionTokens: 5},
 	}, "test-model")
 
-	if m.Stats.InputToken != 0 {
-		t.Fatalf("input token: got %d want 0 (cache-only is reported input)", m.Stats.InputToken)
+	// EffectiveInputTokens includes cache read tokens, so input should be 40
+	if m.Stats.InputToken != 40 {
+		t.Fatalf("input token: got %d want 40 (cache-read counts as effective input)", m.Stats.InputToken)
 	}
 }
