@@ -104,7 +104,7 @@ func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMRes
 		m.BillInputTokens = intPtr(int(nonCachedInput))
 		m.CacheReadTokens = intPtr(int(cacheReadTokens))
 		m.CacheWriteTokens = intPtr(int(cacheWriteTokens))
-		m.Stats.InputToken = usage.PromptTokens
+		m.Stats.InputToken = usage.EffectiveInputTokens()
 		m.Stats.OutputToken = usage.CompletionTokens
 		inputReported = usage.EffectiveInputTokens() > 0
 

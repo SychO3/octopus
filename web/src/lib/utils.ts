@@ -6,13 +6,16 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 
-function formatNumber(num: number | undefined, compare: number[], units: string[]): { value: string, unit: string } {
-  if (num === undefined) return { value: "0.00", unit: units[0] };
-  else if (num >= compare[0]) return { value: (num / compare[0]).toFixed(2), unit: units[1] };
-  else if (num >= compare[1]) return { value: (num / compare[1]).toFixed(2), unit: units[2] };
-  else if (num >= compare[2]) return { value: (num / compare[2]).toFixed(2), unit: units[3] };
-  else if (num >= compare[3]) return { value: (num / compare[3]).toFixed(2), unit: units[4] };
-  else return { value: (num).toFixed(2), unit: units[5] };
+function formatNumber(num: number | undefined, compare: number[], units: string[], decimals = 2): { value: string, unit: string } {
+  if (num === undefined) return { value: "0", unit: units[0] };
+  else if (num >= compare[0]) return { value: (num / compare[0]).toFixed(decimals), unit: units[1] };
+  else if (num >= compare[1]) return { value: (num / compare[1]).toFixed(decimals), unit: units[2] };
+  else if (num >= compare[2]) return { value: (num / compare[2]).toFixed(decimals), unit: units[3] };
+  else if (num >= compare[3]) {
+    const val = num / compare[3];
+    return { value: Number.isInteger(val) ? String(val) : val.toFixed(decimals), unit: units[4] };
+  }
+  else return { value: Number.isInteger(num) ? String(num) : num.toFixed(decimals), unit: units[5] };
 }
 
 export function formatCount(num: number | undefined): { raw: number, formatted: { value: string, unit: string } } {
