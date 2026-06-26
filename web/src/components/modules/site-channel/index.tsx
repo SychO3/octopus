@@ -1134,7 +1134,7 @@ const SiteChannelTableView = forwardRef<
                                 <div role="cell" className="min-w-0">
                                     <div className="max-w-[14rem] truncate text-sm">
                                         {model.group_name || model.group_key}
-                                        {model.group_ratio ? <span className="ml-1 text-muted-foreground">&times;{model.group_ratio}</span> : null}
+                                        {model.group_ratio > 0 ? <span className="ml-1 text-muted-foreground">&times;{model.group_ratio}</span> : null}
                                     </div>
                                 </div>
                                 <div role="cell" className="min-w-0">
@@ -2002,7 +2002,7 @@ function SiteAccountPanel({
                                                 <div className="truncate">{group.group_name || group.group_key}</div>
                                                 <div className="text-[11px] text-muted-foreground">
                                                     {group.models.length} 模型 · Key {group.enabled_key_count}/{group.key_count}
-                                                    {group.group_ratio ? ` · ×${group.group_ratio}` : ''}
+                                                    {group.group_ratio > 0 ? ` · ×${group.group_ratio}` : ''}
                                                     {group.projection_disabled ? ' · 不投影' : ''}
                                                     {group.projection_suspended ? ' · 已暂停' : STALE_MODEL_SYNC_STATUSES.includes(group.model_sync_status) ? ' · 沿用历史' : ''}
                                                     {group.masked_pending_key_count > 0 ? ` · 待补全 ${group.masked_pending_key_count}` : ''}
@@ -2205,7 +2205,7 @@ function SiteAccountPanel({
                                                     disabled={createKeyMutation.isPending || batchCreating}
                                                 >
                                                     {group.group_name || group.group_key}
-                                                    {group.group_ratio ? ` ×${group.group_ratio}` : ''}
+                                                    {group.group_ratio > 0 ? ` ×${group.group_ratio}` : ''}
                                                     <span className="text-[10px] text-amber-700/80 dark:text-amber-200/80">
                                                         {createKeyMutation.isPending && creatingGroup?.group_key === group.group_key ? '创建中...' : '快捷创建'}
                                                     </span>
