@@ -216,11 +216,13 @@ func buildSiteChannelGroups(ctx context.Context, site model.Site, account model.
 	for _, binding := range account.ChannelBindings {
 		baseKey, _ := model.ParseSiteChannelBindingKey(binding.GroupKey)
 		group := ensureSiteChannelGroup(groups, baseKey, baseKey)
-		group.HasProjectedChannel = true
 		group.ProjectedChannelIDs = append(group.ProjectedChannelIDs, binding.ChannelID)
 		channel, err := ChannelGet(binding.ChannelID, ctx)
 		if err != nil {
 			continue
+		}
+		if channel.Enabled {
+			group.HasProjectedChannel = true
 		}
 		if _, ok := projectedChannels[binding.ChannelID]; ok {
 			continue
