@@ -585,8 +585,15 @@ func applyPersistedRouteState(item *model.SiteModel, existing *model.SiteModel, 
 		item.RouteType = model.NormalizeSiteModelRouteType(existing.RouteType)
 		item.RouteSource = model.NormalizeSiteModelRouteSource(existing.RouteSource, existing.ManualOverride)
 		item.ManualOverride = existing.ManualOverride
-		item.RouteRawPayload = existing.RouteRawPayload
 		item.RouteUpdatedAt = existing.RouteUpdatedAt
+		// 保留手动覆盖的路由类型，但允许同步更新元数据（enable_groups 等）用于分组过滤。
+		// 当同步带来了新的 RouteRawPayload 时，合并路由类型：保留手动覆盖值，更新其余元数据。
+		if syncMetadata, ok := model.ParseSiteModelRouteMetadata(item.RouteRawPayload); ok {
+			syncMetadata.RouteType = item.RouteType // 用手动覆盖的 RouteType 替换
+			item.RouteRawPayload = syncMetadata.Marshal()
+		} else {
+			item.RouteRawPayload = existing.RouteRawPayload
+		}
 		return
 	}
 
