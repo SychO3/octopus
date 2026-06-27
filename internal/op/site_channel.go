@@ -588,6 +588,12 @@ func UpdateSiteGroupProjection(siteID int, accountID int, req *model.SiteGroupPr
 	groupKey := model.NormalizeSiteGroupKey(req.GroupKey)
 	groupName := model.NormalizeSiteGroupName(groupKey, groupKey)
 	return db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 切到"不投影"即把该分组整组移出工作区：同步清空其已落库模型，配合 reproject 删除渠道与绑定。
+		if req.ProjectionDisabled {
+			if err := tx.Where("site_account_id = ? AND group_key = ?", accountID, groupKey).Delete(&model.SiteModel{}).Error; err != nil {
+				return err
+			}
+		}
 		var existing model.SiteUserGroup
 		result := tx.Where("site_account_id = ? AND group_key = ?", accountID, groupKey).First(&existing)
 		if result.Error == nil {

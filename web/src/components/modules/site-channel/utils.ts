@@ -157,8 +157,10 @@ export function flattenAccountModels(
 }
 
 export function filterGroups(groups: SiteChannelGroup[], activeFilter: SiteChannelGroupFilter) {
-    if (activeFilter.kind === 'all') return groups;
-    return groups.filter((group) => group.group_key === activeFilter.groupKey);
+    // 标记为"不投影"的分组整组移出工作区，不在模型列表/计数中显示（恢复入口在"已隐藏分组"气泡）。
+    const visible = groups.filter((group) => !group.projection_disabled);
+    if (activeFilter.kind === 'all') return visible;
+    return visible.filter((group) => group.group_key === activeFilter.groupKey);
 }
 
 export function groupFilterCount(groups: SiteChannelGroup[], activeFilter: SiteChannelGroupFilter) {

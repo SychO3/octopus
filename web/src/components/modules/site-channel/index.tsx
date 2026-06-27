@@ -1571,7 +1571,11 @@ function SiteAccountPanel({
             projection_disabled: nextDisabled,
         }, {
             onSuccess: () => {
-                toast.success(nextDisabled ? '已停止生成该分组的投影渠道' : '已恢复生成该分组的投影渠道');
+                // 隐藏当前选中分组后它会从下拉消失，把筛选重置回"全部分组"避免空视图。
+                if (nextDisabled && activeFilter.kind === 'group' && activeFilter.groupKey === group.group_key) {
+                    setActiveFilter(SITE_GROUP_FILTER_ALL);
+                }
+                toast.success(nextDisabled ? '已隐藏该分组，模型与投影渠道已移除' : '已恢复该分组，请重新同步拉回模型');
             },
             onError: (error) => {
                 toast.error(translateSiteError(error, '更新分组投影状态失败'));
@@ -1891,6 +1895,15 @@ function SiteAccountPanel({
         () => visibleGroups.filter((group) => group.has_projected_channel),
         [visibleGroups],
     );
+    // 下拉只列可选（未隐藏）分组；隐藏分组单独走"已隐藏分组"气泡恢复。
+    const selectableGroups = useMemo(
+        () => account.groups.filter((group) => !group.projection_disabled),
+        [account.groups],
+    );
+    const hiddenGroups = useMemo(
+        () => account.groups.filter((group) => group.projection_disabled),
+        [account.groups],
+    );
     const unsupportedRouteCount = useMemo(
         () => visibleModels.filter((model) => !isSupportedRouteType(model.route_type)).length,
         [visibleModels],
@@ -1992,10 +2005,10 @@ function SiteAccountPanel({
                                 <SelectItem value={SITE_GROUP_FILTER_ALL_VALUE} className="rounded-xl py-2">
                                     <div className="flex w-full min-w-0 items-center justify-between gap-3">
                                         <span className="truncate">全部分组</span>
-                                        <span className="text-[11px] text-muted-foreground">{account.groups.length} 组</span>
+                                        <span className="text-[11px] text-muted-foreground">{selectableGroups.length} 组</span>
                                     </div>
                                 </SelectItem>
-                                {account.groups.map((group) => (
+                                {selectableGroups.map((group) => (
                                     <SelectItem key={group.group_key} value={group.group_key} className="rounded-xl py-2">
                                         <div className="flex w-full min-w-0 items-start justify-between gap-3">
                                             <div className="min-w-0">
@@ -2267,6 +2280,45 @@ function SiteAccountPanel({
                                                     {group.group_name || group.group_key}
                                                     <span className="text-[10px] text-muted-foreground">{group.projected_keys.length} Keys</span>
                                                 </Button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </PopoverContent>
+                            </Popover>
+                        ) : null}
+
+                        {hiddenGroups.length > 0 ? (
+                            <Popover>
+                                <PopoverTrigger asChild>
+                                    <button
+                                        type="button"
+                                        className="inline-flex h-8 items-center gap-2 rounded-full border border-border/70 bg-background/70 px-3 text-xs font-medium text-muted-foreground transition hover:bg-muted/60"
+                                    >
+                                        <EyeOff className="size-3.5" />
+                                        已隐藏 {hiddenGroups.length} 组
+                                    </button>
+                                </PopoverTrigger>
+                                <PopoverContent align="start" className="w-72 rounded-2xl border border-border/70 bg-card p-3 shadow-xl">
+                                    <div className="space-y-2">
+                                        <div className="text-xs font-medium text-muted-foreground">已隐藏分组（恢复后需重新同步拉回模型）</div>
+                                        <div className="flex flex-col gap-1.5">
+                                            {hiddenGroups.map((group) => (
+                                                <div
+                                                    key={`hidden-${group.group_key}`}
+                                                    className="flex items-center justify-between gap-2 rounded-xl border border-border/60 bg-muted/30 px-2.5 py-1.5"
+                                                >
+                                                    <span className="min-w-0 truncate text-xs text-foreground">{group.group_name || group.group_key}</span>
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="h-7 shrink-0 rounded-full px-2.5 text-xs"
+                                                        disabled={groupProjectionMutation.isPending}
+                                                        onClick={() => handleToggleGroupProjection(group)}
+                                                    >
+                                                        恢复
+                                                    </Button>
+                                                </div>
                                             ))}
                                         </div>
                                     </div>

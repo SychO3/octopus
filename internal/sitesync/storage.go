@@ -129,6 +129,8 @@ func persistSyncSnapshot(ctx context.Context, accountID int, snapshot *syncSnaps
 		mergedTokens := mergePersistedSiteTokens(accountID, existingTokens, snapshot.tokens, now)
 		incomingModels := preparePersistedSyncModels(accountID, snapshot.models, existingModelMap, now)
 		finalModels := mergePersistedSiteModelsByGroup(existingModels, incomingModels, snapshot.groupResults)
+		// 标记为"不投影"的分组整组移出工作区：其模型既不新增也不沿用，永不进 site_models。
+		finalModels = dropProjectionDisabledGroupModels(finalModels, snapshot.groups)
 
 		if len(snapshot.groups) > 0 {
 			if err := tx.Create(&snapshot.groups).Error; err != nil {
@@ -285,6 +287,27 @@ func mergePersistedSiteModelsByGroup(existing []model.SiteModel, incoming []mode
 	}
 	merged = append(merged, incoming...)
 	return compactPersistedSiteModels(merged)
+}
+
+// dropProjectionDisabledGroupModels 剔除"不投影"分组的模型，使其整组移出工作区。
+func dropProjectionDisabledGroupModels(models []model.SiteModel, groups []model.SiteUserGroup) []model.SiteModel {
+	disabled := make(map[string]struct{})
+	for _, group := range groups {
+		if group.ProjectionDisabled {
+			disabled[model.NormalizeSiteGroupKey(group.GroupKey)] = struct{}{}
+		}
+	}
+	if len(disabled) == 0 {
+		return models
+	}
+	filtered := models[:0]
+	for _, item := range models {
+		if _, ok := disabled[model.NormalizeSiteGroupKey(item.GroupKey)]; ok {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }
 
 func mergePersistedSiteTokens(accountID int, existingTokens []model.SiteToken, incomingTokens []model.SiteToken, now time.Time) []model.SiteToken {

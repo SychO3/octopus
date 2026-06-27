@@ -474,3 +474,90 @@ func TestPersistSyncSnapshotEmptySuspendsWithoutAdvancingSuccessTime(t *testing.
 		t.Fatalf("expected empty sync to preserve last success time %v, got %v", previousSuccess, reloaded.LastModelSyncSuccessAt)
 	}
 }
+
+func TestDropProjectionDisabledGroupModels(t *testing.T) {
+	models := []model.SiteModel{
+		{GroupKey: "level1", ModelName: "gpt-a"},
+		{GroupKey: "level2", ModelName: "gpt-b"},
+		{GroupKey: "level2", ModelName: "gpt-c"},
+		{GroupKey: "level3", ModelName: "gpt-d"},
+	}
+	groups := []model.SiteUserGroup{
+		{GroupKey: "level1", ProjectionDisabled: false},
+		{GroupKey: "level2", ProjectionDisabled: true},
+	}
+
+	filtered := dropProjectionDisabledGroupModels(models, groups)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 models after dropping disabled group, got %d: %+v", len(filtered), filtered)
+	}
+	for _, item := range filtered {
+		if model.NormalizeSiteGroupKey(item.GroupKey) == "level2" {
+			t.Fatalf("disabled group level2 model should be dropped, got %+v", item)
+		}
+	}
+
+	// 无禁用分组时原样返回。
+	if got := dropProjectionDisabledGroupModels(models, []model.SiteUserGroup{{GroupKey: "level1"}}); len(got) != len(models) {
+		t.Fatalf("expected no-op when no group disabled, got %d", len(got))
+	}
+}
+
+func TestPersistSyncSnapshotSkipsProjectionDisabledGroupModels(t *testing.T) {
+	ctx := setupProjectTestDB(t)
+	_, account := createProjectionFixture(t, ctx)
+
+	// 预置一个被标记为不投影的分组。
+	disabledGroup := model.SiteUserGroup{
+		SiteAccountID:      account.ID,
+		GroupKey:           "level2",
+		Name:               "level2",
+		ProjectionDisabled: true,
+	}
+	if err := dbpkg.GetDB().WithContext(ctx).Create(&disabledGroup).Error; err != nil {
+		t.Fatalf("create disabled group failed: %v", err)
+	}
+
+	snapshot := &syncSnapshot{
+		accessToken: account.AccessToken,
+		groups: []model.SiteUserGroup{
+			{GroupKey: "level1", Name: "level1"},
+			{GroupKey: "level2", Name: "level2"},
+		},
+		tokens: []model.SiteToken{
+			{Name: "k1", Token: "key-level1", GroupKey: "level1", GroupName: "level1", Enabled: true, Source: "sync"},
+			{Name: "k2", Token: "key-level2", GroupKey: "level2", GroupName: "level2", Enabled: true, Source: "sync"},
+		},
+		models: []model.SiteModel{
+			{GroupKey: "level1", ModelName: "gpt-a", Source: "sync"},
+			{GroupKey: "level2", ModelName: "gpt-b", Source: "sync"},
+		},
+		groupResults: []siteGroupSyncResult{
+			{GroupKey: "level1", GroupName: "level1", HasKey: true, Status: siteGroupSyncStatusSynced, Authoritative: true, ModelCount: 1},
+			{GroupKey: "level2", GroupName: "level2", HasKey: true, Status: siteGroupSyncStatusSynced, Authoritative: true, ModelCount: 1},
+		},
+		status:  model.SiteExecutionStatusSuccess,
+		message: "ok",
+	}
+	if err := persistSyncSnapshot(ctx, account.ID, snapshot); err != nil {
+		t.Fatalf("persistSyncSnapshot returned error: %v", err)
+	}
+
+	var level2Count int64
+	if err := dbpkg.GetDB().WithContext(ctx).Model(&model.SiteModel{}).
+		Where("site_account_id = ? AND group_key = ?", account.ID, "level2").Count(&level2Count).Error; err != nil {
+		t.Fatalf("count level2 models failed: %v", err)
+	}
+	if level2Count != 0 {
+		t.Fatalf("expected projection-disabled group level2 to persist 0 models, got %d", level2Count)
+	}
+
+	var level1Count int64
+	if err := dbpkg.GetDB().WithContext(ctx).Model(&model.SiteModel{}).
+		Where("site_account_id = ? AND group_key = ?", account.ID, "level1").Count(&level1Count).Error; err != nil {
+		t.Fatalf("count level1 models failed: %v", err)
+	}
+	if level1Count != 1 {
+		t.Fatalf("expected active group level1 to persist 1 model, got %d", level1Count)
+	}
+}
