@@ -1614,12 +1614,21 @@ func (u *Usage) BillableCacheWriteInput() int64 {
 // BillableNonCachedInput returns the non-cached portion of the prompt used for
 // standard input pricing. Semantics:
 //   - Anthropic: PromptTokens already excludes cache, return as-is.
+//     When the newer API includes cache in PromptTokens, subtract cache out.
 //   - OpenAI / Gemini: subtract cached tokens tracked in PromptTokensDetails.
 func (u *Usage) BillableNonCachedInput() int64 {
 	if u == nil {
 		return 0
 	}
 	if u.HasAnthropicCacheSemantic() {
+		if u.isPromptTokensInclusiveOfCache() {
+			// input_tokens already includes cache; non-cached = total - cache
+			nonCached := u.PromptTokens - u.CacheReadInputTokens - u.CacheCreationInputTokens
+			if nonCached < 0 {
+				return 0
+			}
+			return nonCached
+		}
 		if u.PromptTokens < 0 {
 			return 0
 		}
@@ -1633,13 +1642,38 @@ func (u *Usage) BillableNonCachedInput() int64 {
 	return n
 }
 
+// isPromptTokensInclusiveOfCache detects newer Anthropic API behavior (with
+// prompt-caching-scope beta) where the input_tokens field already includes
+// cache_read_input_tokens. In that case adding cache fields on top double-counts.
+//
+// Detection heuristic: if PromptTokens >= CacheRead and the "remainder"
+// (PromptTokens - CacheRead) is close to CacheCreation, input_tokens is the
+// total prompt. Otherwise it's genuinely large uncached input (old semantic).
+func (u *Usage) isPromptTokensInclusiveOfCache() bool {
+	if u == nil || u.CacheReadInputTokens == 0 || u.PromptTokens < u.CacheReadInputTokens {
+		return false
+	}
+	remainder := u.PromptTokens - u.CacheReadInputTokens
+	if u.CacheCreationInputTokens > 0 {
+		// remainder ≈ CacheCreation means input_tokens ≈ CacheRead + CacheCreation = total
+		return remainder <= u.CacheCreationInputTokens*2
+	}
+	// No cache_creation: if remainder is tiny (<10% of cache_read), it's inclusive
+	return remainder*10 <= u.CacheReadInputTokens
+}
+
 // EffectiveInputTokens returns the total input tokens counted against quota
 // across providers: PromptTokens + CacheReadInputTokens + CacheCreationInputTokens.
 // For OpenAI/Gemini (where PromptTokens already includes cached reads),
 // CacheRead/Create stay zero so the result collapses to PromptTokens.
+// For newer Anthropic API versions where input_tokens is already inclusive of
+// cache tokens, avoids double-counting.
 func (u *Usage) EffectiveInputTokens() int64 {
 	if u == nil {
 		return 0
+	}
+	if u.isPromptTokensInclusiveOfCache() {
+		return u.PromptTokens
 	}
 	return u.PromptTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
