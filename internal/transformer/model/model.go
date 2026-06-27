@@ -931,6 +931,10 @@ func (m *Message) hasAnyPayload() bool {
 	return false
 }
 
+func (m *Message) HasAnyPayload() bool {
+	return m.hasAnyPayload()
+}
+
 // isEmptyTextPart reports whether a MessageContentPart is a text-type entry
 // whose Text is nil or empty. Non-text parts always return false so image /
 // audio / file / tool_use payloads are never dropped.

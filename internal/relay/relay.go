@@ -1047,6 +1047,68 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 // 复用 stream 包的 sentinel，确保 StreamProcessor 返回的空流错误与本地 failover 判定一致。
 var errEmptyUpstreamStream = stream.ErrEmptyUpstreamStream
 
+func isEmptyCompletionResponse(resp *model.InternalLLMResponse) bool {
+	if resp == nil || resp.IsEmbeddingResponse() {
+		return false
+	}
+	if len(resp.Choices) == 0 {
+		return true
+	}
+	for _, choice := range resp.Choices {
+		msg := choice.Message
+		if msg == nil {
+			msg = choice.Delta
+		}
+		if msg == nil {
+			continue
+		}
+		if msg.HasAnyPayload() {
+			return false
+		}
+	}
+	return true
+}
+
+func shouldSuppressEmptyStreamChunk(chunk *model.InternalLLMResponse, inAdapter model.Inbound) bool {
+	if chunk == nil {
+		return false
+	}
+	type responseGetter interface {
+		GetInternalResponse(context.Context) (*model.InternalLLMResponse, error)
+	}
+	if chunk.Object == "[DONE]" {
+		getter, ok := inAdapter.(responseGetter)
+		if !ok {
+			return false
+		}
+		resp, err := getter.GetInternalResponse(context.Background())
+		if err != nil || resp == nil {
+			return true
+		}
+		return isEmptyCompletionResponse(resp)
+	}
+	if len(chunk.Choices) == 0 {
+		return false
+	}
+	for _, c := range chunk.Choices {
+		if c.FinishReason == nil {
+			return false
+		}
+		if c.Delta != nil && c.Delta.HasAnyPayload() {
+			return false
+		}
+	}
+	getter, ok := inAdapter.(responseGetter)
+	if !ok {
+		return false
+	}
+	resp, _ := getter.GetInternalResponse(context.Background())
+	if resp == nil {
+		return true
+	}
+	return isEmptyCompletionResponse(resp)
+}
+
 // handleStreamResponse 处理标准（转换）流式响应，基于统一的 StreamProcessor。
 func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http.Response) error {
 	defer ra.closeFirstTokenBudget()
@@ -1170,6 +1232,10 @@ func (ra *relayAttempt) encodeInboundStreamResponse(ctx context.Context, interna
 	if internalStream.Model != "" && internalStream.Model != ra.requestModel {
 		internalStream.Model = ra.requestModel
 	}
+	if shouldSuppressEmptyStreamChunk(internalStream, ra.inAdapter) {
+		log.Debugf("suppressing empty stream chunk from channel %s to trigger failover", ra.channel.Name)
+		return nil, nil
+	}
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
@@ -1184,6 +1250,11 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
 		return fmt.Errorf("failed to transform outbound response: %w", err)
+	}
+
+	if isEmptyCompletionResponse(internalResponse) {
+		log.Warnf("empty completion from channel %s, triggering failover", ra.channel.Name)
+		return errEmptyUpstreamStream
 	}
 
 	if internalResponse.Model != "" && internalResponse.Model != ra.requestModel {
