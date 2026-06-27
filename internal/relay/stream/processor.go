@@ -56,6 +56,13 @@ type StreamConfig struct {
 	FirstTokenTimeout time.Duration // 0 to disable
 	HeartbeatInterval time.Duration // 0 to disable
 
+	// KeepAlivePayload, when set, returns the bytes to send as a heartbeat instead
+	// of a bare SSE comment (":\n\n"). Returning nil falls back to the comment.
+	// Used to emit protocol-native keep-alive frames (Anthropic ping, OpenAI empty
+	// chunk / response.in_progress) that reset stall timers on clients that ignore
+	// SSE comments.
+	KeepAlivePayload func() []byte
+
 	// Callbacks
 	OnFirstToken func()                                            // Called when first payload written
 	OnFinish     func(ctx context.Context, rawStream []byte) error // Called on stream end
@@ -227,9 +234,16 @@ func (p *StreamProcessor) processEvent(data []byte) error {
 	return nil
 }
 
-// writeHeartbeat sends SSE heartbeat (comment line).
+// writeHeartbeat sends a keep-alive: a protocol-native frame when KeepAlivePayload
+// provides one, otherwise a bare SSE comment line.
 func (p *StreamProcessor) writeHeartbeat() error {
-	if _, err := p.config.Writer.Write([]byte(":\n\n")); err != nil {
+	payload := []byte(":\n\n")
+	if p.config.KeepAlivePayload != nil {
+		if custom := p.config.KeepAlivePayload(); len(custom) > 0 {
+			payload = custom
+		}
+	}
+	if _, err := p.config.Writer.Write(payload); err != nil {
 		return err
 	}
 	p.config.Writer.Flush()

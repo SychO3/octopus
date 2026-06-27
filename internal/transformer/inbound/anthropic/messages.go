@@ -1811,3 +1811,9 @@ func mergeToolCall(toolCalls []model.ToolCall, delta model.ToolCall) []model.Too
 func formatSSEEvent(eventType string, data []byte) []byte {
 	return []byte(fmt.Sprintf("event:%s\ndata:%s\n\n", eventType, string(data)))
 }
+
+// StreamKeepAlive 返回 Anthropic 官方 ping 事件，用于上游静默间隙保活。
+// ping 是 Messages SSE 的标准事件，无状态、无序列号，所有客户端均忽略其语义。
+func (i *MessagesInbound) StreamKeepAlive() []byte {
+	return formatSSEEvent("ping", []byte(`{"type":"ping"}`))
+}

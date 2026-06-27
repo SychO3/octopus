@@ -626,6 +626,36 @@ func (ra *relayAttempt) clientRequestHeaders() http.Header {
 	return ra.c.Request.Header
 }
 
+// inboundKeepAlive returns a heartbeat payload generator when the inbound protocol
+// supports protocol-native keep-alive frames; otherwise nil (callers fall back to
+// SSE comments). The returned closure is only invoked from the StreamProcessor's
+// single-goroutine event loop, so it shares the inbound transformer's state safely.
+func (ra *relayAttempt) inboundKeepAlive() func() []byte {
+	if ra == nil {
+		return nil
+	}
+	ka, ok := ra.inAdapter.(model.StreamKeepAliver)
+	if !ok {
+		return nil
+	}
+	return ka.StreamKeepAlive
+}
+
+// writeKeepAlive sends a heartbeat on the Anthropic passthrough loop: a protocol-
+// native frame (Anthropic ping) when available, otherwise a bare SSE comment.
+func (ra *relayAttempt) writeKeepAlive(writer streamHeartbeatWriter) error {
+	if gen := ra.inboundKeepAlive(); gen != nil {
+		if payload := gen(); len(payload) > 0 {
+			if _, err := writer.Write(payload); err != nil {
+				return err
+			}
+			writer.Flush()
+			return nil
+		}
+	}
+	return writeSSEHeartbeat(writer)
+}
+
 // handleWSStreamResponse processes events from an upstream WebSocket reader
 // via the unified StreamProcessor (WSSource).
 func (ra *relayAttempt) handleWSStreamResponse(ctx context.Context, reader *wsUpstreamReader) error {
@@ -648,6 +678,7 @@ func (ra *relayAttempt) handleWSStreamResponse(ctx context.Context, reader *wsUp
 		Context:           ctx,
 		FirstTokenTimeout: firstTokenTimeout,
 		HeartbeatInterval: streamHeartbeatInterval(),
+		KeepAlivePayload:  ra.inboundKeepAlive(),
 		OnFirstToken: func() {
 			ra.metrics.SetFirstTokenTime(time.Now())
 		},
@@ -1044,6 +1075,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		Context:           ctx,
 		FirstTokenTimeout: firstTokenTimeout,
 		HeartbeatInterval: streamHeartbeatInterval(),
+		KeepAlivePayload:  ra.inboundKeepAlive(),
 		OnFirstToken: func() {
 			ra.metrics.SetFirstTokenTime(time.Now())
 			ra.stopFirstTokenTimer()
@@ -1246,13 +1278,25 @@ func (ra *relayAttempt) handleStreamResponsePassthroughV2(ctx context.Context, r
 
 	var rawStreamBuf bytes.Buffer
 
+	source := stream.StreamSource(stream.NewRawSource(response.Body, 32*1024))
+	var keepAlive func() []byte
+	// OpenAI Responses 直通：octopus 不解析上游序列号，无法凭空造合规事件。
+	// 改为捕获并原样重放首个 response.in_progress/created 快照事件作为保活帧，
+	// 重置只认真实事件的客户端 stall 计时器，且不制造 sequence_number 跳空。
+	if ra.internalRequest != nil && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse {
+		capturer := stream.NewResponsesKeepAliveCapturer(source)
+		source = capturer
+		keepAlive = capturer.KeepAlive
+	}
+
 	processor := stream.NewStreamProcessor(stream.StreamConfig{
-		Source:            stream.NewRawSource(response.Body, 32*1024),
+		Source:            source,
 		Transform:         nil, // 直通：不做转换
 		Writer:            ra.getStreamWriter(),
 		Context:           ctx,
 		FirstTokenTimeout: firstTokenTimeout,
 		HeartbeatInterval: streamHeartbeatInterval(),
+		KeepAlivePayload:  keepAlive,
 		BufferRawStream:   true,
 		TerminalEvents:    cfg.TerminalEvents,
 		OnFirstToken: func() {
@@ -1827,7 +1871,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 			_ = response.Body.Close()
 			return ra.firstTokenTimeoutError()
 		case <-heartbeatC:
-			if err := writeSSEHeartbeat(writer); err != nil {
+			if err := ra.writeKeepAlive(writer); err != nil {
 				return err
 			}
 		case r, ok := <-results:

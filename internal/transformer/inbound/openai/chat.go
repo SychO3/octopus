@@ -77,6 +77,13 @@ func (i *ChatInbound) TransformStreamEvents(ctx context.Context, events []model.
 	return i.TransformStream(ctx, stream)
 }
 
+// StreamKeepAlive 返回一个空 choices 的 chat.completion.chunk，用于上游静默间隙保活。
+// Chat Completions 无官方 ping 事件；空 choices chunk 不携带增量内容、无序列号，
+// 复用本文件 TransformStream 中已为 Cherry Studio 等客户端保留的 "choices 必须存在" 约定。
+func (i *ChatInbound) StreamKeepAlive() []byte {
+	return []byte(`data: {"object":"chat.completion.chunk","choices":[]}` + "\n\n")
+}
+
 // GetInternalResponse returns the complete internal response for logging, statistics, etc.
 // For streaming: aggregates all stored stream chunks into a complete response
 // For non-streaming: returns the stored response

@@ -43,6 +43,17 @@ type InboundStreamEventTransformer interface {
 	TransformStreamEvents(ctx context.Context, events []StreamEvent) ([]byte, error)
 }
 
+// StreamKeepAliver is an optional interface for Inbound transformers that can emit
+// a protocol-native keep-alive frame during long upstream silences (e.g. reasoning
+// gaps). Unlike a bare SSE comment (":\n\n"), a protocol-native frame resets stall
+// timers on clients that only count real events.
+//
+// Returns nil when no safe keep-alive can be produced yet (e.g. the stream has not
+// emitted its opening event), in which case callers fall back to an SSE comment.
+type StreamKeepAliver interface {
+	StreamKeepAlive() []byte
+}
+
 /*
 请求流程
 非流式

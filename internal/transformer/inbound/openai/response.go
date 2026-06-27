@@ -870,6 +870,26 @@ func formatSSEData(data []byte) []byte {
 	return []byte(fmt.Sprintf("data: %s\n\n", string(data)))
 }
 
+// StreamKeepAlive 返回一个 response.in_progress 事件用于上游静默间隙保活（transform 路径）。
+// 仅在已发出 response.created 之后才安全（否则违反 Responses 事件顺序）；此时重发 in_progress
+// 不携带增量内容，且经 enqueueEvent 正确续 sequence_number，不会制造序列号跳空。
+// 尚未开始时返回 nil，由调用方回退到 SSE 注释行。
+func (i *ResponseInbound) StreamKeepAlive() []byte {
+	if !i.hasResponseCreated {
+		return nil
+	}
+	response := &ResponsesResponse{
+		Object:     "response",
+		ID:         i.responseID,
+		Model:      i.model,
+		CreatedAt:  i.createdAt,
+		Status:     lo.ToPtr("in_progress"),
+		Truncation: i.truncation,
+		Output:     []ResponsesItem{},
+	}
+	return i.enqueueEvent(&ResponsesStreamEvent{Type: "response.in_progress", Response: response})
+}
+
 // Request types
 
 type ResponsesRequest struct {
