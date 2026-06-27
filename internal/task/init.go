@@ -20,6 +20,7 @@ const (
 	TaskSiteSync          = "site_sync"
 	TaskSiteCheckin       = "site_checkin"
 	TaskWSAffinityCleanup = "ws_affinity_cleanup"
+	TaskChannelProbe      = "channel_probe_unlocked"
 )
 
 func Init() {
@@ -38,6 +39,10 @@ func Init() {
 
 	// 注册基础URL延迟任务
 	Register(TaskBaseUrlDelay, 24*time.Hour, true, ChannelBaseUrlDelayTask)
+
+	// 注册渠道端点格式探测任务：每天对未锁定且启用的渠道重探一次，
+	// 上游临时挂/限流恢复后自动补锁。不在启动时跑，避免重启即探测风暴。
+	Register(TaskChannelProbe, 24*time.Hour, false, ChannelProbeUnlockedTask)
 
 	// 注册LLM同步任务
 	syncLLMIntervalHours, err := op.SettingGetInt(model.SettingKeySyncLLMInterval)
