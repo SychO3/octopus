@@ -1109,6 +1109,42 @@ func shouldSuppressEmptyStreamChunk(chunk *model.InternalLLMResponse, inAdapter 
 	return isEmptyCompletionResponse(resp)
 }
 
+func shouldSuppressEmptyStreamEvents(events []model.StreamEvent, inAdapter model.Inbound) bool {
+	for _, e := range events {
+		switch e.Kind {
+		case model.StreamEventKindTextDelta,
+			model.StreamEventKindThinkingDelta,
+			model.StreamEventKindSignatureDelta,
+			model.StreamEventKindToolCallStart,
+			model.StreamEventKindToolCallDelta,
+			model.StreamEventKindContentBlockStart:
+			return false
+		}
+	}
+	hasStop := false
+	for _, e := range events {
+		if e.Kind == model.StreamEventKindMessageStop || e.Kind == model.StreamEventKindDone {
+			hasStop = true
+			break
+		}
+	}
+	if !hasStop {
+		return false
+	}
+	type responseGetter interface {
+		GetInternalResponse(context.Context) (*model.InternalLLMResponse, error)
+	}
+	getter, ok := inAdapter.(responseGetter)
+	if !ok {
+		return false
+	}
+	resp, _ := getter.GetInternalResponse(context.Background())
+	if resp == nil {
+		return true
+	}
+	return isEmptyCompletionResponse(resp)
+}
+
 // handleStreamResponse 处理标准（转换）流式响应，基于统一的 StreamProcessor。
 func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http.Response) error {
 	defer ra.closeFirstTokenBudget()
@@ -1211,6 +1247,10 @@ func (ra *relayAttempt) encodeInboundStreamEvents(ctx context.Context, events []
 		if events[i].Model != "" && events[i].Model != ra.requestModel {
 			events[i].Model = ra.requestModel
 		}
+	}
+	if shouldSuppressEmptyStreamEvents(events, ra.inAdapter) {
+		log.Debugf("suppressing empty stream events from channel %s to trigger failover", ra.channel.Name)
+		return nil, nil
 	}
 	inEventAdapter, ok := ra.inAdapter.(model.InboundStreamEventTransformer)
 	if !ok {
