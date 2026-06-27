@@ -1069,6 +1069,21 @@ func isEmptyCompletionResponse(resp *model.InternalLLMResponse) bool {
 	return true
 }
 
+func (ra *relayAttempt) streamHasSubstantiveContent() bool {
+	type responseGetter interface {
+		GetInternalResponse(context.Context) (*model.InternalLLMResponse, error)
+	}
+	getter, ok := ra.inAdapter.(responseGetter)
+	if !ok {
+		return true
+	}
+	resp, err := getter.GetInternalResponse(context.Background())
+	if err != nil || resp == nil {
+		return false
+	}
+	return !isEmptyCompletionResponse(resp)
+}
+
 func shouldSuppressEmptyStreamChunk(chunk *model.InternalLLMResponse, inAdapter model.Inbound) bool {
 	if chunk == nil {
 		return false
@@ -1157,8 +1172,30 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	// 交接早期心跳给 StreamProcessor 内层 ticker，避免双路 flush 竞争
 	ra.heartbeat.Hand()
 
+	var pendingOutput []byte
+	hasContent := false
+
 	transform := func(ctx context.Context, data []byte) ([]byte, error) {
-		return ra.transformStreamData(ctx, string(data))
+		output, err := ra.transformStreamData(ctx, string(data))
+		if err != nil || len(output) == 0 {
+			return output, err
+		}
+		if hasContent {
+			return output, nil
+		}
+		if ra.streamHasSubstantiveContent() {
+			hasContent = true
+			if len(pendingOutput) > 0 {
+				combined := make([]byte, len(pendingOutput)+len(output))
+				copy(combined, pendingOutput)
+				copy(combined[len(pendingOutput):], output)
+				pendingOutput = nil
+				return combined, nil
+			}
+			return output, nil
+		}
+		pendingOutput = append(pendingOutput, output...)
+		return nil, nil
 	}
 
 	var firstTokenTimeout time.Duration
@@ -1249,7 +1286,7 @@ func (ra *relayAttempt) encodeInboundStreamEvents(ctx context.Context, events []
 		}
 	}
 	if shouldSuppressEmptyStreamEvents(events, ra.inAdapter) {
-		log.Debugf("suppressing empty stream events from channel %s to trigger failover", ra.channel.Name)
+		log.Debugf("suppressing empty stream events to trigger failover")
 		return nil, nil
 	}
 	inEventAdapter, ok := ra.inAdapter.(model.InboundStreamEventTransformer)
@@ -1273,7 +1310,7 @@ func (ra *relayAttempt) encodeInboundStreamResponse(ctx context.Context, interna
 		internalStream.Model = ra.requestModel
 	}
 	if shouldSuppressEmptyStreamChunk(internalStream, ra.inAdapter) {
-		log.Debugf("suppressing empty stream chunk from channel %s to trigger failover", ra.channel.Name)
+		log.Debugf("suppressing empty stream chunk to trigger failover")
 		return nil, nil
 	}
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
