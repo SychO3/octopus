@@ -268,9 +268,10 @@ interface RetryBadgeWithTooltipProps {
     channelName: string;
     brandColor: string;
     attempts: ChannelAttempt[];
+    totalAttempts: number;
 }
 
-function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadgeWithTooltipProps) {
+function RetryBadgeWithTooltip({ channelName, brandColor, attempts, totalAttempts }: RetryBadgeWithTooltipProps) {
     const t = useTranslations('log.card');
     const merged = useMemo(() => mergeAdjacentAttempts(attempts), [attempts]);
 
@@ -284,6 +285,7 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
                 >
                     <RotateCw className="size-3 mr-1 opacity-80" />
                     {channelName}
+                    <span className="ml-1 font-semibold tabular-nums">×{totalAttempts}</span>
                 </Badge>
             </TooltipTrigger>
             <TooltipContent className="border bg-card p-2 min-w-[280px] shadow-sm rounded-3xl flex flex-col gap-1">
@@ -649,6 +651,7 @@ export function LogCard({ log, siteTargets }: { log: RelayLog; siteTargets: LogS
                                             channelName={log.channel_name}
                                             brandColor={brandColor}
                                             attempts={log.attempts!}
+                                            totalAttempts={log.total_attempts || log.attempts!.length}
                                         />
                                     ) : (
                                         <Badge
@@ -733,6 +736,7 @@ export function LogCard({ log, siteTargets }: { log: RelayLog; siteTargets: LogS
                                         channelName={log.channel_name}
                                         brandColor={brandColor}
                                         attempts={log.attempts!}
+                                        totalAttempts={log.total_attempts || log.attempts!.length}
                                     />
                                 ) : (
                                     <Badge
