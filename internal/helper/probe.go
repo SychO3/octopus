@@ -150,7 +150,7 @@ func probeOneFormat(ctx context.Context, channel model.Channel, key, modelName s
 		return ProbeInconclusive
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 	return classifyProbeResponse(resp.StatusCode, body)
 }
 
@@ -180,19 +180,33 @@ func bodyLooksLikeRealCompletion(body []byte) bool {
 	if low == "" {
 		return false
 	}
-	// 明确的错误体特征：无效路由 / 纯 error 包裹
+	// 明确的错误体特征：无效路由
 	if strings.Contains(low, "invalid url") || strings.Contains(low, "no route") ||
-		strings.Contains(low, "cannot post") || strings.Contains(low, "not found") {
+		strings.Contains(low, "cannot post") || strings.Contains(low, "404 page not found") {
 		return false
 	}
-	// 真实补全的结构标志（覆盖 OpenAI chat/responses、Anthropic、Gemini）
-	for _, marker := range []string{`"choices"`, `"candidates"`, `"content"`, `"output"`} {
+	// 真实补全的正向结构标志，覆盖各协议且多出现在响应体前部：
+	//   OpenAI chat: {"id":"chatcmpl-...","object":"chat.completion","choices":[...]}
+	//   OpenAI responses: {"id":"resp_...","object":"response","status":"completed",...}
+	//     （responses 会先回显超长 instructions，output 数组可能在读取窗口之外，
+	//      故须用前部的 object/id 标志判定，不能只依赖 output）
+	//   Anthropic: {"id":"msg_...","content":[...]}  Gemini: {"candidates":[...]}
+	//   Embedding: {"object":"list","data":[...]}
+	positives := []string{
+		`"object":"response"`, `"object": "response"`,
+		`"object":"chat.completion"`, `"object": "chat.completion"`,
+		`"object":"list"`, `"object": "list"`,
+		`"id":"resp_`, `"id": "resp_`, `"id":"chatcmpl`, `"id": "chatcmpl`,
+		`"choices"`, `"candidates"`, `"content"`, `"output"`,
+	}
+	for _, marker := range positives {
 		if strings.Contains(low, marker) {
 			return true
 		}
 	}
-	// 有响应体且不含 error 包裹，也视为真实（部分上游精简返回）
-	return !strings.Contains(low, `"error"`)
+	// 兜底：成功响应常带 "error":null，先剔除再判断是否还残留 error 包裹。
+	stripped := strings.NewReplacer(`"error":null`, "", `"error": null`, "").Replace(low)
+	return !strings.Contains(stripped, `"error"`)
 }
 
 func applyProbeHeaders(request *http.Request, headers []model.CustomHeader) {

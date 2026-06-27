@@ -21,6 +21,9 @@ func TestClassifyProbeResponse(t *testing.T) {
 		{"real-200-chat", 200, `{"choices":[{"message":{"content":"hi"}}]}`, ProbeSupported},
 		{"real-200-anthropic", 200, `{"content":[{"type":"text","text":"hi"}]}`, ProbeSupported},
 		{"real-200-gemini", 200, `{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`, ProbeSupported},
+		// Responses 成功体：带 "error":null，且 output 在超长 instructions 回显之后
+		{"real-200-responses-errnull", 200, `{"id":"resp_abc","object":"response","status":"completed","error":null,"instructions":"You are GPT-5.1 running in the Codex CLI ` + strings.Repeat("x", 9000) + `"}`, ProbeSupported},
+		{"real-200-chatcmpl-id", 200, `{"id":"chatcmpl-xyz","object":"chat.completion","error":null}`, ProbeSupported},
 		{"fake-200-invalid-url", 200, `{"error":{"message":"Invalid URL (POST /v1/v1beta/...)"}}`, ProbeNoRoute},
 		{"fake-200-error-body", 200, `{"error":{"message":"something"}}`, ProbeNoRoute},
 		{"ratelimit-429", 429, `{"error":"rate limited"}`, ProbeSupported},
