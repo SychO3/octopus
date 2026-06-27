@@ -688,7 +688,7 @@ export function LogCard({ log, siteTargets }: { log: RelayLog; siteTargets: LogS
                                 <div className="flex items-center gap-1.5">
                                     <ArrowDownToLine className={cn('size-3.5 shrink-0', hasCacheTokens(log) ? 'text-sky-500' : 'text-green-500')} />
                                     <span className="flex items-center gap-1">
-                                        {t('input')}
+                                        <span className="shrink-0 whitespace-nowrap">{t('input')}</span>
                                         <span className="tabular-nums">{getHeadlineInputTokens(log).toLocaleString()}</span>
                                         {hasCacheTokens(log) && log.cache_read_tokens != null && log.cache_read_tokens > 0 ? (
                                             <Badge
