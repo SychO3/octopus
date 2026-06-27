@@ -1084,6 +1084,42 @@ func (ra *relayAttempt) streamHasSubstantiveContent() bool {
 	return !isEmptyCompletionResponse(resp)
 }
 
+func isEmptyPassthroughResponseBody(body []byte) bool {
+	if len(body) == 0 {
+		return true
+	}
+	var resp struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message *struct {
+				Content *string `json:"content"`
+			} `json:"message"`
+			Delta *struct {
+				Content *string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+		Output json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false
+	}
+	if resp.Object == "response" || len(resp.Output) > 0 {
+		return false
+	}
+	if len(resp.Choices) == 0 {
+		return true
+	}
+	for _, c := range resp.Choices {
+		if c.Message != nil && c.Message.Content != nil && *c.Message.Content != "" {
+			return false
+		}
+		if c.Delta != nil && c.Delta.Content != nil && *c.Delta.Content != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func shouldSuppressEmptyStreamChunk(chunk *model.InternalLLMResponse, inAdapter model.Inbound) bool {
 	if chunk == nil {
 		return false
@@ -1530,6 +1566,11 @@ func (ra *relayAttempt) handleResponsePassthrough(ctx context.Context, response 
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if isEmptyPassthroughResponseBody(body) {
+		log.Warnf("empty passthrough response from channel %s, triggering failover", ra.channel.Name)
+		return errEmptyUpstreamStream
 	}
 
 	contentType := response.Header.Get("Content-Type")
