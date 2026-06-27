@@ -61,11 +61,15 @@ export function StatsChart() {
         const emptyHero: HeroValue = { value: undefined, unit: '' };
 
         if (period === 'all') {
-            // 累计档：优先使用 statsTotal；否则 fallback 到 statsDaily 全量聚合
-            const points: ChartPoint[] = sortedDaily.map((stat) => ({
-                date: dayjs(stat.date).format('MM/DD'),
-                total_cost: stat.total_cost.raw,
-            }));
+            // 累计档：图表展示逐日累加的总花费（单调递增曲线），与 7/30 天的「每日花费」区分
+            let runningCost = 0;
+            const points: ChartPoint[] = sortedDaily.map((stat) => {
+                runningCost += stat.total_cost.raw;
+                return {
+                    date: dayjs(stat.date).format('MM/DD'),
+                    total_cost: runningCost,
+                };
+            });
 
             if (statsTotal) {
                 return {
