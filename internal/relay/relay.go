@@ -1098,13 +1098,32 @@ func isEmptyPassthroughResponseBody(body []byte) bool {
 				Content *string `json:"content"`
 			} `json:"delta"`
 		} `json:"choices"`
-		Output json.RawMessage `json:"output"`
+		Output []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return false
 	}
-	if resp.Object == "response" || len(resp.Output) > 0 {
-		return false
+	if resp.Object == "response" {
+		if len(resp.Output) == 0 {
+			return false
+		}
+		for _, item := range resp.Output {
+			if item.Type != "message" {
+				return false
+			}
+			for _, c := range item.Content {
+				if c.Text != "" {
+					return false
+				}
+			}
+		}
+		return true
 	}
 	if len(resp.Choices) == 0 {
 		return true
