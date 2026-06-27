@@ -1084,6 +1084,28 @@ func (ra *relayAttempt) streamHasSubstantiveContent() bool {
 	return !isEmptyCompletionResponse(resp)
 }
 
+func isEmptyPassthroughStream(rawStream []byte) bool {
+	hasData := false
+	for _, line := range bytes.Split(rawStream, []byte("\n")) {
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		data := bytes.TrimPrefix(line, []byte("data: "))
+		if bytes.Equal(data, []byte("[DONE]")) {
+			continue
+		}
+		hasData = true
+		if isEmptyPassthroughResponseBody(data) {
+			continue
+		}
+		return false
+	}
+	if !hasData {
+		return true
+	}
+	return true
+}
+
 func isEmptyPassthroughResponseBody(body []byte) bool {
 	if len(body) == 0 {
 		return true
@@ -1124,6 +1146,9 @@ func isEmptyPassthroughResponseBody(body []byte) bool {
 			}
 		}
 		return true
+	}
+	if resp.Object != "chat.completion" && resp.Object != "chat.completion.chunk" {
+		return false
 	}
 	if len(resp.Choices) == 0 {
 		return true
@@ -1508,6 +1533,10 @@ func (ra *relayAttempt) handleStreamResponsePassthroughV2(ctx context.Context, r
 		},
 		OnFinish: func(ctx context.Context, rawStream []byte) error {
 			if len(rawStream) == 0 {
+				return stream.ErrEmptyUpstreamStream
+			}
+			if isEmptyPassthroughStream(rawStream) {
+				log.Warnf("empty passthrough stream, triggering failover")
 				return stream.ErrEmptyUpstreamStream
 			}
 			rawStreamBuf.Write(rawStream)
