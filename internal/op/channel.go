@@ -192,6 +192,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "type")
 		updates.Type = *req.Type
 	}
+	if req.TypeLocked != nil {
+		selectFields = append(selectFields, "type_locked")
+		updates.TypeLocked = *req.TypeLocked
+	}
 	if req.Enabled != nil {
 		selectFields = append(selectFields, "enabled")
 		updates.Enabled = *req.Enabled

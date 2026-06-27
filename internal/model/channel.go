@@ -63,6 +63,7 @@ type Channel struct {
 	ID            int                   `json:"id" gorm:"primaryKey"`
 	Name          string                `json:"name" gorm:"unique;not null"`
 	Type          outbound.OutboundType `json:"type"`
+	TypeLocked    bool                  `json:"type_locked" gorm:"default:false"` // type 经实测探测确定后锁定，同步不再覆盖
 	Enabled       bool                  `json:"enabled" gorm:"default:true"`
 	BaseUrls      []BaseUrl             `json:"base_urls" gorm:"serializer:json"`
 	Keys          []ChannelKey          `json:"keys" gorm:"foreignKey:ChannelID"`
@@ -140,6 +141,7 @@ type ChannelUpdateRequest struct {
 	ID            int                    `json:"id" binding:"required"`
 	Name          *string                `json:"name,omitempty"`
 	Type          *outbound.OutboundType `json:"type,omitempty"`
+	TypeLocked    *bool                  `json:"type_locked,omitempty"`
 	Enabled       *bool                  `json:"enabled,omitempty"`
 	BaseUrls      *[]BaseUrl             `json:"base_urls,omitempty"`
 	Model         *string                `json:"model,omitempty"`

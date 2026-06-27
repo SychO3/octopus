@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
@@ -59,6 +60,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/reset-circuit", http.MethodPost).
 				Handle(resetCircuitBreaker),
+		).
+		AddRoute(
+			router.NewRoute("/probe-all", http.MethodPost).
+				Handle(probeAllChannels),
 		)
 }
 
@@ -234,4 +239,70 @@ func resetCircuitBreaker(c *gin.Context) {
 		op.ResetAllBalancerState()
 		resp.Success(c, gin.H{"reset": "all"})
 	}
+}
+
+// probeAllChannels 对全部渠道实测探测端点格式，结论确定的改正 Type 并锁定。
+// 用于功能上线后一次性回填现有渠道；服务端限流（并发 5），避免撞上游限流。
+func probeAllChannels(c *gin.Context) {
+	channels, err := op.ChannelList(c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type probeRow struct {
+		ChannelID   int    `json:"channel_id"`
+		ChannelName string `json:"channel_name"`
+		CurrentType int    `json:"current_type"`
+		DetectedType int    `json:"detected_type"`
+		Conclusive  bool   `json:"conclusive"`
+		Changed     bool   `json:"changed"`
+		Locked      bool   `json:"locked"`
+		Reason      string `json:"reason"`
+	}
+
+	rows := make([]probeRow, len(channels))
+	sem := make(chan struct{}, 5)
+	var wg sync.WaitGroup
+	for i := range channels {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ch := channels[idx]
+			outcome := helper.ProbeChannelEndpoint(c.Request.Context(), ch)
+			row := probeRow{
+				ChannelID: ch.ID, ChannelName: ch.Name,
+				CurrentType: int(outcome.CurrentType), DetectedType: int(outcome.DetectedType),
+				Conclusive: outcome.Conclusive, Changed: outcome.Changed, Reason: outcome.Reason,
+			}
+			if outcome.Conclusive {
+				locked := true
+				updateReq := &model.ChannelUpdateRequest{ID: ch.ID, TypeLocked: &locked, BypassManagedCheck: true}
+				if outcome.Changed {
+					detected := outcome.DetectedType
+					updateReq.Type = &detected
+				}
+				if _, err := op.ChannelUpdate(updateReq, c.Request.Context()); err != nil {
+					row.Reason = "update failed: " + err.Error()
+				} else {
+					row.Locked = true
+				}
+			}
+			rows[idx] = row
+		}(i)
+	}
+	wg.Wait()
+
+	changed, locked := 0, 0
+	for _, r := range rows {
+		if r.Changed && r.Locked {
+			changed++
+		}
+		if r.Locked {
+			locked++
+		}
+	}
+	resp.Success(c, gin.H{"total": len(rows), "changed": changed, "locked": locked, "results": rows})
 }

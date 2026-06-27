@@ -160,6 +160,7 @@ func ProjectAccount(ctx context.Context, accountID int) ([]int, error) {
 				if err := op.ChannelCreate(&channelPayload, ctx); err != nil {
 					return nil, fmt.Errorf("failed to create managed channel: %w", err)
 				}
+				probeAndLockManagedChannelType(ctx, channelPayload.ID)
 				binding = model.SiteChannelBinding{SiteID: siteRecord.ID, SiteAccountID: account.ID, GroupKey: bindingKey, ChannelID: channelPayload.ID}
 				if group.ID != 0 {
 					binding.SiteUserGroupID = &group.ID
@@ -184,6 +185,7 @@ func ProjectAccount(ctx context.Context, accountID int) ([]int, error) {
 				if err := op.ChannelCreate(&channelPayload, ctx); err != nil {
 					return nil, fmt.Errorf("failed to recreate managed channel: %w", err)
 				}
+				probeAndLockManagedChannelType(ctx, channelPayload.ID)
 				binding.ChannelID = channelPayload.ID
 				if group.ID != 0 {
 					binding.SiteUserGroupID = &group.ID
@@ -202,6 +204,10 @@ func ProjectAccount(ctx context.Context, accountID int) ([]int, error) {
 			}
 
 			updateReq := &model.ChannelUpdateRequest{ID: existingChannel.ID, Name: &channelPayload.Name, Type: &channelPayload.Type, Enabled: &channelPayload.Enabled, BaseUrls: &channelPayload.BaseUrls, Model: &channelPayload.Model, CustomModel: &channelPayload.CustomModel, ProxyMode: &channelPayload.ProxyMode, ProxyConfigID: channelPayload.ProxyConfigID, AutoSync: &channelPayload.AutoSync, CustomHeader: &channelPayload.CustomHeader, BypassManagedCheck: true}
+			// type 经实测探测锁定后，同步不再覆盖其端点格式（其余字段照常更新）。
+			if existingChannel.TypeLocked {
+				updateReq.Type = nil
+			}
 			updateReq.KeysToAdd, updateReq.KeysToUpdate, updateReq.KeysToDelete = diffManagedChannelKeys(existingChannel.Keys, channelPayload.Keys)
 			if _, err := op.ChannelUpdate(updateReq, ctx); err != nil {
 				return nil, fmt.Errorf("failed to update managed channel: %w", err)
@@ -654,6 +660,38 @@ func siteModelBelongsToProjectedGroup(item model.SiteModel, groupKey string) boo
 // compositeBindingKey 生成复合绑定 key，用于区分同一 tokenGroup 的不同端点格式 Channel
 func compositeBindingKey(groupKey string, obType outbound.OutboundType, split bool) string {
 	return model.ComposeSiteChannelBindingKey(groupKey, model.SiteModelRouteTypeFromOutboundType(obType), split)
+}
+
+// probeAndLockManagedChannelType 在渠道首次同步创建后，实测探测其真实端点格式：
+// 探测结论确定时，改正 Type 并锁定（TypeLocked=true），使后续同步不再覆盖。
+// 探测不确定（瞬时失败/鉴权/无法判定）时不改不锁，留待下次同步重试。
+func probeAndLockManagedChannelType(ctx context.Context, channelID int) {
+	channel, err := op.ChannelGet(channelID, ctx)
+	if err != nil || channel == nil {
+		log.Warnf("probe: failed to load new channel %d: %v", channelID, err)
+		return
+	}
+	outcome := helper.ProbeChannelEndpoint(ctx, *channel)
+	if !outcome.Conclusive {
+		log.Debugf("probe: channel %d (%s) inconclusive: %s", channelID, channel.Name, outcome.Reason)
+		return
+	}
+	locked := true
+	updateReq := &model.ChannelUpdateRequest{ID: channelID, TypeLocked: &locked, BypassManagedCheck: true}
+	if outcome.Changed {
+		detected := outcome.DetectedType
+		updateReq.Type = &detected
+	}
+	if _, err := op.ChannelUpdate(updateReq, ctx); err != nil {
+		log.Warnf("probe: failed to lock channel %d type: %v", channelID, err)
+		return
+	}
+	if outcome.Changed {
+		log.Infof("probe: channel %d (%s) endpoint type %d -> %d (locked): %s",
+			channelID, channel.Name, outcome.CurrentType, outcome.DetectedType, outcome.Reason)
+	} else {
+		log.Debugf("probe: channel %d (%s) type %d confirmed and locked", channelID, channel.Name, outcome.CurrentType)
+	}
 }
 
 func parseCompositeBindingKey(groupKey string) (string, model.SiteModelRouteType) {
