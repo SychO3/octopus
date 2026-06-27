@@ -1517,9 +1517,36 @@ func (ra *relayAttempt) handleStreamResponsePassthroughV2(ctx context.Context, r
 		keepAlive = capturer.KeepAlive
 	}
 
+	var pendingPassthrough []byte
+	passthroughHasContent := false
+	isResponsesAPI := ra.internalRequest != nil && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse
+
+	passthroughTransform := func(ctx context.Context, data []byte) ([]byte, error) {
+		if !isResponsesAPI || passthroughHasContent {
+			return data, nil
+		}
+		if bytes.Contains(data, []byte("response.output_text.delta")) ||
+			bytes.Contains(data, []byte("response.function_call_arguments.delta")) ||
+			bytes.Contains(data, []byte("response.file_search_call.results")) {
+			passthroughHasContent = true
+		}
+		if passthroughHasContent {
+			if len(pendingPassthrough) > 0 {
+				combined := make([]byte, len(pendingPassthrough)+len(data))
+				copy(combined, pendingPassthrough)
+				copy(combined[len(pendingPassthrough):], data)
+				pendingPassthrough = nil
+				return combined, nil
+			}
+			return data, nil
+		}
+		pendingPassthrough = append(pendingPassthrough, data...)
+		return nil, nil
+	}
+
 	processor := stream.NewStreamProcessor(stream.StreamConfig{
 		Source:            source,
-		Transform:         nil, // 直通：不做转换
+		Transform:         passthroughTransform,
 		Writer:            ra.getStreamWriter(),
 		Context:           ctx,
 		FirstTokenTimeout: firstTokenTimeout,
