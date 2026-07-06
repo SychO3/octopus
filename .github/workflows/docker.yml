@@ -9,6 +9,9 @@ permissions:
   contents: read
   packages: write
 
+env:
+  IMAGE: ghcr.io/sycho3/octopus
+
 jobs:
   docker:
     runs-on: ubuntu-latest
@@ -30,7 +33,7 @@ jobs:
           context: .
           file: Dockerfile.dev
           push: true
-          tags: ghcr.io/${{ github.repository }}:dev
+          tags: ${{ env.IMAGE }}:dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
