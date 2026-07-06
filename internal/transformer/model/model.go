@@ -491,8 +491,9 @@ func (r *InternalLLMRequest) fillMissingToolCallIDs() {
 			toolCall.ID = candidate
 			usedIDs[candidate] = struct{}{}
 		}
-		if r.Messages[messageIndex].ToolCallID != "" {
-			r.Messages[messageIndex].ToolCallID = SanitizeToolID(r.Messages[messageIndex].ToolCallID)
+		if r.Messages[messageIndex].ToolCallID != nil && *r.Messages[messageIndex].ToolCallID != "" {
+			sanitized := SanitizeToolID(*r.Messages[messageIndex].ToolCallID)
+			r.Messages[messageIndex].ToolCallID = &sanitized
 		}
 	}
 }
