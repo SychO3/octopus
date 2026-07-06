@@ -21,6 +21,7 @@ const (
 	TaskSiteCheckin       = "site_checkin"
 	TaskWSAffinityCleanup = "ws_affinity_cleanup"
 	TaskChannelProbe      = "channel_probe_unlocked"
+	TaskWebDAVBackup      = "webdav_backup"
 )
 
 func Init() {
@@ -110,4 +111,13 @@ func Init() {
 		cliFetchIntervalHours = 6
 	}
 	Register(string(model.SettingKeyCLIVersionsFetchInterval), time.Duration(cliFetchIntervalHours)*time.Hour, true, FetchCLIVersions)
+
+	// 注册 WebDAV 自动备份任务（间隔为 0 时不运行）
+	webdavIntervalHours, err := op.SettingGetInt(model.SettingKeyWebDAVBackupInterval)
+	if err != nil {
+		log.Warnf("failed to get webdav backup interval: %v", err)
+	} else if webdavIntervalHours > 0 {
+		webdavInterval := time.Duration(webdavIntervalHours) * time.Hour
+		Register(string(model.SettingKeyWebDAVBackupInterval), webdavInterval, false, WebDAVBackupTask)
+	}
 }
