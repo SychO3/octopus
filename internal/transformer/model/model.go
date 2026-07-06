@@ -467,7 +467,7 @@ func (r *InternalLLMRequest) fillMissingToolCallIDs() {
 			if tc.ID == "" {
 				continue
 			}
-			usedIDs[tc.ID] = struct{}{}
+			usedIDs[SanitizeToolID(tc.ID)] = struct{}{}
 		}
 	}
 
@@ -475,6 +475,7 @@ func (r *InternalLLMRequest) fillMissingToolCallIDs() {
 		for toolCallIndex := range r.Messages[messageIndex].ToolCalls {
 			toolCall := &r.Messages[messageIndex].ToolCalls[toolCallIndex]
 			if toolCall.ID != "" {
+				toolCall.ID = SanitizeToolID(toolCall.ID)
 				continue
 			}
 
@@ -490,7 +491,34 @@ func (r *InternalLLMRequest) fillMissingToolCallIDs() {
 			toolCall.ID = candidate
 			usedIDs[candidate] = struct{}{}
 		}
+		if r.Messages[messageIndex].ToolCallID != "" {
+			r.Messages[messageIndex].ToolCallID = SanitizeToolID(r.Messages[messageIndex].ToolCallID)
+		}
 	}
+}
+
+// SanitizeToolID replaces characters not matching [a-zA-Z0-9_-] with underscore.
+func SanitizeToolID(id string) string {
+	clean := true
+	for _, r := range id {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return id
+	}
+	var b strings.Builder
+	b.Grow(len(id))
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 func stableToolCallID(toolCall ToolCall) string {

@@ -101,6 +101,7 @@ func (o *MessageOutbound) TransformRequestRaw(ctx context.Context, rawBody []byt
 		return nil, fmt.Errorf("raw body is empty")
 	}
 	rawBody = stripEmptySignatureThinkingBlocks(rawBody)
+	rawBody = sanitizeRawToolIDs(rawBody)
 	rawBody = mirrorToolResultImages(rawBody)
 	rawBody = ensureRawToolChoiceAuto(rawBody)
 	if strings.TrimSpace(modelName) != "" {
@@ -2271,4 +2272,90 @@ func (o *MessageOutbound) PassthroughConfig() model.PassthroughConfig {
 		},
 		CollectMetrics: true, // Anthropic requires full response aggregation for metrics
 	}
+}
+
+// sanitizeRawToolIDs rewrites tool_use "id" and tool_result "tool_use_id" fields
+// in the raw Anthropic request body to conform to ^[a-zA-Z0-9_-]+$ (Bedrock requirement).
+func sanitizeRawToolIDs(rawBody []byte) []byte {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &root); err != nil {
+		return rawBody
+	}
+	messagesRaw, ok := root["messages"]
+	if !ok {
+		return rawBody
+	}
+	var messages []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(messagesRaw, &messages); err != nil {
+		return rawBody
+	}
+
+	modified := false
+	for i := range messages {
+		content := messages[i].Content
+		if len(content) == 0 || content[0] != '[' {
+			continue
+		}
+		var blocks []map[string]json.RawMessage
+		if err := json.Unmarshal(content, &blocks); err != nil {
+			continue
+		}
+		blockModified := false
+		for j := range blocks {
+			blockType, _ := unquoteJSON(blocks[j]["type"])
+			switch blockType {
+			case "tool_use":
+				if idRaw, exists := blocks[j]["id"]; exists {
+					if id, _ := unquoteJSON(idRaw); id != "" {
+						sanitized := model.SanitizeToolID(id)
+						if sanitized != id {
+							blocks[j]["id"], _ = json.Marshal(sanitized)
+							blockModified = true
+						}
+					}
+				}
+			case "tool_result":
+				if idRaw, exists := blocks[j]["tool_use_id"]; exists {
+					if id, _ := unquoteJSON(idRaw); id != "" {
+						sanitized := model.SanitizeToolID(id)
+						if sanitized != id {
+							blocks[j]["tool_use_id"], _ = json.Marshal(sanitized)
+							blockModified = true
+						}
+					}
+				}
+			}
+		}
+		if blockModified {
+			newContent, err := json.Marshal(blocks)
+			if err == nil {
+				messages[i].Content = newContent
+				modified = true
+			}
+		}
+	}
+
+	if !modified {
+		return rawBody
+	}
+
+	newMessages, err := json.Marshal(messages)
+	if err != nil {
+		return rawBody
+	}
+	root["messages"] = newMessages
+	result, err := json.Marshal(root)
+	if err != nil {
+		return rawBody
+	}
+	return result
+}
+
+func unquoteJSON(raw json.RawMessage) (string, error) {
+	var s string
+	err := json.Unmarshal(raw, &s)
+	return s, err
 }
