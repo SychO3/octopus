@@ -298,6 +298,9 @@ type MessageParam struct {
 type MessageContent struct {
 	Content         *string               `json:"content,omitempty"`
 	MultipleContent []MessageContentBlock `json:"multiple_content,omitempty"`
+	// RawContent preserves the original JSON when the content format is
+	// unrecognized, allowing the gateway to pass it through verbatim.
+	RawContent json.RawMessage `json:"-"`
 }
 
 func (m MessageContent) ExtractTrivalBlocks(cacheControl *CacheControl) []MessageContentBlock {
@@ -324,6 +327,9 @@ func (m MessageContent) ExtractTrivalBlocks(cacheControl *CacheControl) []Messag
 }
 
 func (c MessageContent) MarshalJSON() ([]byte, error) {
+	if len(c.RawContent) > 0 {
+		return c.RawContent, nil
+	}
 	if c.Content != nil {
 		return json.Marshal(c.Content)
 	}
@@ -363,7 +369,12 @@ func (c *MessageContent) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return fmt.Errorf("invalid content type")
+	// Unrecognized format — preserve raw JSON for passthrough instead of
+	// rejecting the entire request.
+	buf := make([]byte, len(data))
+	copy(buf, data)
+	c.RawContent = buf
+	return nil
 }
 
 // MessageContentBlock represents different types of content blocks.
