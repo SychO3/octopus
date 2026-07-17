@@ -1530,6 +1530,14 @@ func (ra *relayAttempt) collectResponse() {
 		actualModel = strings.TrimSpace(ra.internalRequest.Model)
 	}
 	ra.metrics.SetInternalResponse(internalResponse, actualModel)
+
+	// 日志展示用客户端入口协议（Messages / Responses / Chat），而非内部 OpenAI 壳
+	respForLog := ra.metrics.filterResponseForLog(internalResponse)
+	if clientBytes, terr := ra.inAdapter.TransformResponse(ra.requestContext(), respForLog); terr != nil {
+		log.Debugf("collectResponse: client-facing transform skipped: %v", terr)
+	} else if len(clientBytes) > 0 {
+		ra.metrics.SetClientFacingResponse(clientBytes)
+	}
 }
 
 // shouldPassthroughAnthropic 判定是否走 Anthropic→Anthropic 原生直通路径。

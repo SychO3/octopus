@@ -29,6 +29,9 @@ type RelayMetrics struct {
 	RawRequest       []byte
 	InternalRequest  *transformerModel.InternalLLMRequest
 	InternalResponse *transformerModel.InternalLLMResponse
+	// ClientFacingResponse 是按客户端入口协议渲染后的响应 JSON（如 Anthropic message）。
+	// 有值时优先写入日志，避免把内部 OpenAI 壳展示给用户。
+	ClientFacingResponse []byte
 
 	// 统计指标
 	ActualModel string
@@ -85,6 +88,13 @@ func (m *RelayMetrics) SetWSRecovery(recovery model.RelayLogWSRecovery) {
 		return
 	}
 	m.WSRecovery = wsRecoveryPtr(recovery)
+}
+
+func (m *RelayMetrics) SetClientFacingResponse(body []byte) {
+	if m == nil || len(body) == 0 {
+		return
+	}
+	m.ClientFacingResponse = body
 }
 
 func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMResponse, actualModel string) {
@@ -269,8 +279,10 @@ func (m *RelayMetrics) saveLog(ctx context.Context, success bool, err error, dur
 		}
 	}
 
-	// 响应内容
-	if m.InternalResponse != nil {
+	// 响应内容：优先客户端协议形态，否则回退内部 OpenAI 壳
+	if len(m.ClientFacingResponse) > 0 {
+		relayLog.ResponseContent = string(m.ClientFacingResponse)
+	} else if m.InternalResponse != nil {
 		respForLog := m.filterResponseForLog(m.InternalResponse)
 		if respJSON, jsonErr := json.Marshal(respForLog); jsonErr == nil {
 			relayLog.ResponseContent = string(respJSON)
