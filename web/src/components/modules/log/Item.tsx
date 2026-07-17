@@ -160,6 +160,18 @@ function getHeadlineInputTokens(log: RelayLog) {
         : Math.max(0, log.input_tokens + cacheRead + cacheWrite);
 }
 
+/** 卡片上 cache hit 紧凑展示：相对总输入的百分比，避免徽标挤版 */
+function formatCacheReadPercent(log: RelayLog): string | null {
+    const cacheRead = log.cache_read_tokens ?? 0;
+    if (cacheRead <= 0) return null;
+    const total = getHeadlineInputTokens(log);
+    if (total <= 0) return null;
+    const pct = Math.min(100, (cacheRead / total) * 100);
+    if (pct >= 99.5) return '100%';
+    if (pct >= 10) return `${Math.round(pct)}%`;
+    return `${(Math.floor(pct * 10 + 1e-9) / 10).toFixed(1)}%`;
+}
+
 function getWSBadgeMeta(mode: RelayLogWSMode | null | undefined, usedWS: boolean | undefined, t: ReturnType<typeof useTranslations<'log.card'>>) {
     if (!usedWS && !mode) return null;
 
@@ -688,27 +700,18 @@ export function LogCard({ log, siteTargets }: { log: RelayLog; siteTargets: LogS
                                     <Zap className="size-3.5 shrink-0 text-amber-500" />
                                     <span>{t('duration')} {formatDurationCompact(log.ftut)} / {formatDurationCompact(log.use_time)}</span>
                                 </div>
-                                <div
-                                    className={cn(
-                                        'flex min-w-0 items-center gap-1.5',
-                                        // 手机两列网格半格装不下「输入 + 大数字 + cache 徽标」，单独占满一行
-                                        hasCacheTokens(log) &&
-                                            log.cache_read_tokens != null &&
-                                            log.cache_read_tokens > 0 &&
-                                            'col-span-2 md:col-span-1',
-                                    )}
-                                >
+                                <div className="flex min-w-0 items-center gap-1.5">
                                     <ArrowDownToLine className={cn('size-3.5 shrink-0', hasCacheTokens(log) ? 'text-sky-500' : 'text-green-500')} />
-                                    <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
-                                        <span className="shrink-0 whitespace-nowrap">{t('input')}</span>
+                                    <span className="flex min-w-0 items-center gap-1 whitespace-nowrap">
+                                        <span className="shrink-0">{t('input')}</span>
                                         <span className="tabular-nums">{getHeadlineInputTokens(log).toLocaleString()}</span>
                                         {hasCacheTokens(log) && log.cache_read_tokens != null && log.cache_read_tokens > 0 ? (
-                                            <Badge
-                                                variant="secondary"
-                                                className="shrink-0 px-1.5 py-0 text-[11px] bg-sky-500/15 text-sky-600 dark:text-sky-400"
+                                            <span
+                                                className="shrink-0 text-[11px] tabular-nums text-sky-600 dark:text-sky-400"
+                                                title={formatCompactTokenCount(log.cache_read_tokens)}
                                             >
-                                                {formatCompactTokenCount(log.cache_read_tokens)}
-                                            </Badge>
+                                                {formatCacheReadPercent(log)}
+                                            </span>
                                         ) : null}
                                     </span>
                                 </div>
