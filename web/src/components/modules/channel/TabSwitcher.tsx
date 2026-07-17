@@ -32,7 +32,7 @@ export function ChannelTabSwitcher({ className }: Props) {
     );
 
     return (
-        <div className={cn('flex items-baseline gap-5', className)}>
+        <div className={cn('flex flex-wrap items-baseline gap-x-5 gap-y-1', className)}>
             {TABS.map(({ value, key }) => {
                 const active = activeTab === value;
                 return (
@@ -41,7 +41,7 @@ export function ChannelTabSwitcher({ className }: Props) {
                         type="button"
                         onClick={() => setActiveTab(value)}
                         className={cn(
-                            'relative inline-flex items-baseline gap-1.5 pb-1 text-sm font-medium transition-colors',
+                            'relative inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap pb-1 text-sm font-medium transition-colors',
                             active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
                         )}
                     >
