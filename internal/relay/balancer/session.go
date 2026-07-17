@@ -63,3 +63,13 @@ func resetStickyByChannel(channelID int) {
 		return true
 	})
 }
+
+func resetStickyAll() int {
+	n := 0
+	globalSession.Range(func(key, _ any) bool {
+		globalSession.Delete(key)
+		n++
+		return true
+	})
+	return n
+}

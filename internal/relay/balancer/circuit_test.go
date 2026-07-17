@@ -86,3 +86,28 @@ func TestHalfOpenDoesNotRemainTrippedForeverWithoutResult(t *testing.T) {
 		t.Fatalf("expected half-open timestamp to be cleared, got %v", entry.HalfOpenSince)
 	}
 }
+
+
+func TestResetStateAllClearsBreakersAndSticky(t *testing.T) {
+	Reset()
+	globalBreaker.Store(circuitKey(1, 10, "gpt-4o"), &circuitEntry{
+		State:           StateOpen,
+		LastFailureTime: time.Now(),
+		TripCount:       2,
+	})
+	SetSticky(9, "gpt-4o", 1, 10)
+
+	circuits, stickies := ResetStateAllWithStats()
+	if circuits != 1 {
+		t.Fatalf("expected 1 circuit cleared, got %d", circuits)
+	}
+	if stickies != 1 {
+		t.Fatalf("expected 1 sticky cleared, got %d", stickies)
+	}
+	if tripped, _ := IsTripped(1, 10, "gpt-4o"); tripped {
+		t.Fatal("expected circuit breaker to be closed after reset all")
+	}
+	if entry := GetSticky(9, "gpt-4o", time.Minute); entry != nil {
+		t.Fatalf("expected sticky session cleared, got %#v", entry)
+	}
+}

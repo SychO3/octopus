@@ -226,19 +226,18 @@ func resetCircuitBreaker(c *gin.Context) {
 	var req struct {
 		ChannelID int `json:"channel_id"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		// 不传 channel_id 则重置所有
-		op.ResetAllBalancerState()
-		resp.Success(c, gin.H{"reset": "all"})
+	// 绑定失败或 channel_id<=0：重置全部（熔断 + 粘性）
+	if err := c.ShouldBindJSON(&req); err != nil || req.ChannelID <= 0 {
+		circuits, stickies := op.ResetAllBalancerStateWithStats()
+		resp.Success(c, gin.H{
+			"reset":    "all",
+			"circuits": circuits,
+			"stickies": stickies,
+		})
 		return
 	}
-	if req.ChannelID > 0 {
-		op.ResetBalancerStateForChannel(req.ChannelID)
-		resp.Success(c, gin.H{"reset": req.ChannelID})
-	} else {
-		op.ResetAllBalancerState()
-		resp.Success(c, gin.H{"reset": "all"})
-	}
+	op.ResetBalancerStateForChannel(req.ChannelID)
+	resp.Success(c, gin.H{"reset": req.ChannelID})
 }
 
 // probeAllChannels 对全部渠道实测探测端点格式，结论确定的改正 Type 并锁定。

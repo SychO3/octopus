@@ -54,12 +54,20 @@ function NumberFieldRow({ settingKey, label, placeholder, tooltip, icon, min, ma
 function ResetCircuitBreakerRow() {
     const t = useTranslations('setting.circuitBreaker');
     const resetMutation = useMutation({
-        mutationFn: () => apiClient.post('/api/v1/channel/reset-circuit', {}),
+        mutationFn: () =>
+            apiClient.post<{ reset: string | number; circuits?: number; stickies?: number }>(
+                '/api/v1/channel/reset-circuit',
+                {},
+            ),
     });
 
     const handleReset = () => {
         resetMutation.mutate(undefined, {
-            onSuccess: () => toast.success(t('resetSuccess')),
+            onSuccess: (data) => {
+                const circuits = data?.circuits ?? 0;
+                const stickies = data?.stickies ?? 0;
+                toast.success(t('resetSuccessDetail', { circuits, stickies }));
+            },
             onError: () => toast.error(t('resetFailed')),
         });
     };

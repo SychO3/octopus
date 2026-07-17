@@ -226,9 +226,10 @@
             },
             "hint": "當渠道連續失敗達到閾值後觸發熔斷，冷卻時間按指數退避增長，上限為最大冷卻時間",
             "resetLabel": "重置熔斷器",
-            "resetTooltip": "手動重置所有渠道的熔斷狀態，立即恢復被熔斷的渠道",
+            "resetTooltip": "清空全部熔斷狀態與會話粘性，避免請求繼續粘在壞渠道上",
             "resetButton": "重置全部",
             "resetSuccess": "熔斷器已重置",
+            "resetSuccessDetail": "已清理 {circuits} 個熔斷項、{stickies} 個粘性會話",
             "resetFailed": "重置失敗"
         },
         "outlierRetirement": {

@@ -53,6 +53,16 @@ func resetCircuitBreakerByChannel(channelID int) {
 	})
 }
 
+func resetCircuitBreakerAll() int {
+	n := 0
+	globalBreaker.Range(func(key, _ any) bool {
+		globalBreaker.Delete(key)
+		n++
+		return true
+	})
+	return n
+}
+
 // getOrCreateEntry 获取或创建熔断器条目
 func getOrCreateEntry(key string) *circuitEntry {
 	if v, ok := globalBreaker.Load(key); ok {

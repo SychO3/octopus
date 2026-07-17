@@ -226,9 +226,10 @@
             },
             "hint": "When a channel fails consecutively up to the threshold, circuit breaker trips. Cooldown grows exponentially up to the max cooldown",
             "resetLabel": "Reset Circuit Breaker",
-            "resetTooltip": "Manually reset all channel circuit breakers to immediately restore tripped channels",
+            "resetTooltip": "Clear all circuit breakers and sticky sessions so traffic is not stuck on bad channels",
             "resetButton": "Reset All",
             "resetSuccess": "Circuit breakers reset",
+            "resetSuccessDetail": "Cleared {circuits} circuit entries and {stickies} sticky sessions",
             "resetFailed": "Reset failed"
         },
         "outlierRetirement": {
