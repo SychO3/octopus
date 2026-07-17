@@ -54,18 +54,46 @@ docker compose -f docker-compose.dev.yml down
 
 **每次修改代码后必须 commit，再构建部署。**
 
-### Nginx 反向代理配置
+### 生产部署（当前）
 
-生产环境通过宝塔面板配置 Nginx 反向代理：
-- 域名：`ai.515111.xyz`
-- 代理目标：`http://127.0.0.1:8080`
-- 配置文件：`/www/server/panel/vhost/nginx/ai.515111.xyz.conf`
-- 已配置 SSL、WebSocket 支持、流式响应优化（300s 超时，禁用缓冲）
+架构：源站在加拿大，美国仅做 Nginx 反代 + SSL。
 
-修改配置后重载 Nginx：
+| 角色 | 位置 | 说明 |
+|------|------|------|
+| 源站 | 加拿大 `142.4.219.49` | Docker 跑 Octopus，宿主机端口 **18081→容器 8080**（本机 8080 被 bepusdt 占用） |
+| 反代 | 美国 `154.44.14.43` | Nginx 终结 SSL，回源加拿大 |
+| 域名 | `oct.uf.gs` | 唯一正式入口（旧 `ai.515111.xyz` 已下线） |
+| 镜像 | `ghcr.io/sycho3/octopus:dev` | GHCR 推送自本仓库 |
+
+**加拿大源站路径**
+- 部署目录：`/root/octopus-app/`
+- compose：`/root/octopus-app/docker-compose.yml`
+- 数据：`/root/octopus-app/data/`（`config.json` + SQLite `data.db` + `octopus.db`）
+- 代码仓库：`/root/octopus`（开发用；生产容器不绑该目录）
+
+常用命令：
 ```bash
-nginx -t && nginx -s reload
+cd /root/octopus-app
+docker compose pull && docker compose up -d   # 更新镜像并重启
+docker compose logs -f
+docker compose ps
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18081/
 ```
+
+**美国反代**
+- 配置：`/etc/nginx/conf.d/oct-ufgs.conf`
+- 证书：`/etc/nginx/cert/oct.uf.gs/`（acme.sh + Cloudflare DNS）
+- 回源：`http://142.4.219.49:18081`
+- SSE/流式：关缓冲，长超时（7200s）
+- 修改后：`nginx -t && nginx -s reload`
+
+**数据说明**
+- 业务库为 SQLite；`relay_logs` 会迅速膨胀，迁移/备份时通常排除日志、保留配置与统计。
+- 热导出示例（不停服）：`.backup` → `DELETE FROM relay_logs; VACUUM;`
+
+**部署约定**
+- 改代码后：commit → 构建/推送 `ghcr.io/sycho3/octopus:dev` → 加拿大 `docker compose pull && up -d`
+- 不要把生产 data 提交进 git
 
 ## 架构概览
 
