@@ -32,7 +32,7 @@ export function ChannelTabSwitcher({ className }: Props) {
     );
 
     return (
-        <div className={cn('flex flex-wrap items-baseline gap-x-5 gap-y-1', className)}>
+        <div className={cn('flex flex-nowrap items-baseline gap-3 sm:gap-5', className)}>
             {TABS.map(({ value, key }) => {
                 const active = activeTab === value;
                 return (

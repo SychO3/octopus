@@ -18,6 +18,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CONTENT_MAP } from '@/route';
 import { apiClient } from '@/api/client';
 import { logger } from '@/lib/logger';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 const RETURNING_USER_KEY = 'octopus_visited';
 const RETURNING_LOGO_MS = 300;
@@ -27,6 +28,7 @@ export function AppContainer() {
     const { activeItem, direction } = useNavStore();
     const t = useTranslations('navbar');
     const queryClient = useQueryClient();
+    const isMobile = useIsMobile();
 
     // Logo 动画完成状态 — 回访用户缩短动画时间
     const [logoAnimationComplete, setLogoAnimationComplete] = useState(false);
@@ -209,41 +211,48 @@ export function AppContainer() {
         >
             <NavBar />
             <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
-                <header className="my-6 flex flex-none items-start gap-x-2 px-2">
-                    <Logo size={48} />
-                    <div className="flex-1 overflow-hidden pb-2 sm:pb-0">
-                        <AnimatePresence mode="wait" custom={direction}>
-                            <motion.div
-                                key={activeItem}
-                                custom={direction}
-                                variants={{
-                                    initial: (direction: number) => ({
-                                        y: 32 * direction,
-                                        opacity: 0
-                                    }),
-                                    animate: {
-                                        y: 0,
-                                        opacity: 1
-                                    },
-                                    exit: (direction: number) => ({
-                                        y: -32 * direction,
-                                        opacity: 0
-                                    })
-                                }}
-                                initial="initial"
-                                animate="animate"
-                                exit="exit"
-                                transition={{ duration: 0.3 }}
-                                className="flex flex-col sm:flex-row sm:items-baseline gap-2 sm:gap-6"
-                            >
-                                <span className="text-3xl font-bold mt-1">{t(activeItem)}</span>
-                                {activeItem === 'channel' && <ChannelTabSwitcher />}
-                            </motion.div>
-                        </AnimatePresence>
+                <header className="my-6 flex flex-none flex-col gap-2 px-2">
+                    <div className="flex items-start gap-x-2">
+                        <Logo size={48} />
+                        <div className="min-w-0 flex-1 overflow-hidden">
+                            <AnimatePresence mode="wait" custom={direction}>
+                                <motion.div
+                                    key={activeItem}
+                                    custom={direction}
+                                    variants={{
+                                        initial: (direction: number) => ({
+                                            y: 32 * direction,
+                                            opacity: 0
+                                        }),
+                                        animate: {
+                                            y: 0,
+                                            opacity: 1
+                                        },
+                                        exit: (direction: number) => ({
+                                            y: -32 * direction,
+                                            opacity: 0
+                                        })
+                                    }}
+                                    initial="initial"
+                                    animate="animate"
+                                    exit="exit"
+                                    transition={{ duration: 0.3 }}
+                                    className="flex items-baseline gap-6"
+                                >
+                                    <span className="mt-1 text-3xl font-bold">{t(activeItem)}</span>
+                                    {activeItem === 'channel' && !isMobile && (
+                                        <ChannelTabSwitcher />
+                                    )}
+                                </motion.div>
+                            </AnimatePresence>
+                        </div>
+                        <div className="relative ml-auto flex min-h-[36px] items-center gap-3">
+                            <Toolbar />
+                        </div>
                     </div>
-                    <div className="ml-auto flex items-center gap-3 relative min-h-[36px]">
-                        <Toolbar />
-                    </div>
+                    {activeItem === 'channel' && isMobile && (
+                        <ChannelTabSwitcher />
+                    )}
                     <ProxyPoolDialog />
                 </header>
                 <AnimatePresence mode="wait" initial={false}>
