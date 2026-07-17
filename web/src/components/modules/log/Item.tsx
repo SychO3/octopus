@@ -688,9 +688,18 @@ export function LogCard({ log, siteTargets }: { log: RelayLog; siteTargets: LogS
                                     <Zap className="size-3.5 shrink-0 text-amber-500" />
                                     <span>{t('duration')} {formatDurationCompact(log.ftut)} / {formatDurationCompact(log.use_time)}</span>
                                 </div>
-                                <div className="flex items-center gap-1.5">
+                                <div
+                                    className={cn(
+                                        'flex min-w-0 items-center gap-1.5',
+                                        // 手机两列网格半格装不下「输入 + 大数字 + cache 徽标」，单独占满一行
+                                        hasCacheTokens(log) &&
+                                            log.cache_read_tokens != null &&
+                                            log.cache_read_tokens > 0 &&
+                                            'col-span-2 md:col-span-1',
+                                    )}
+                                >
                                     <ArrowDownToLine className={cn('size-3.5 shrink-0', hasCacheTokens(log) ? 'text-sky-500' : 'text-green-500')} />
-                                    <span className="flex items-center gap-1">
+                                    <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
                                         <span className="shrink-0 whitespace-nowrap">{t('input')}</span>
                                         <span className="tabular-nums">{getHeadlineInputTokens(log).toLocaleString()}</span>
                                         {hasCacheTokens(log) && log.cache_read_tokens != null && log.cache_read_tokens > 0 ? (
