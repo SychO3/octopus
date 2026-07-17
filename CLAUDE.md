@@ -63,21 +63,35 @@ docker compose -f docker-compose.dev.yml down
 | 源站 | 加拿大 `142.4.219.49` | Docker 跑 Octopus，宿主机端口 **18081→容器 8080**（本机 8080 被 bepusdt 占用） |
 | 反代 | 美国 `154.44.14.43` | Nginx 终结 SSL，回源加拿大 |
 | 域名 | `oct.uf.gs` | 唯一正式入口（旧 `ai.515111.xyz` 已下线） |
-| 镜像 | `ghcr.io/sycho3/octopus:dev` | GHCR 推送自本仓库 |
+| 镜像 | `ghcr.io/sycho3/octopus:dev` | **本机源码构建**的本地 tag（默认不推 GHCR） |
 
 **加拿大源站路径**
+- 代码仓库：`/root/octopus`（改代码、构建镜像）
 - 部署目录：`/root/octopus-app/`
-- compose：`/root/octopus-app/docker-compose.yml`
+- compose：`/root/octopus-app/docker-compose.yml`（`image: ghcr.io/sycho3/octopus:dev`，宿主机 `18081:8080`）
 - 数据：`/root/octopus-app/data/`（`config.json` + SQLite `data.db` + `octopus.db`）
-- 代码仓库：`/root/octopus`（开发用；生产容器不绑该目录）
+- 生产容器不 bind-mount 源码目录
 
-常用命令：
+**本地构建并部署（默认流程，不要 push）**
 ```bash
+# 1) 在源码目录构建镜像（打成 compose 使用的 tag）
+cd /root/octopus
+docker build -f Dockerfile.dev \
+  --build-arg GIT_VERSION=dev \
+  --build-arg GIT_AUTHOR=SychO3 \
+  --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --build-arg COMMIT_ID="$(git rev-parse --short HEAD)" \
+  -t ghcr.io/sycho3/octopus:dev \
+  .
+
+# 2) 用本地镜像重建容器（不要 docker compose pull）
 cd /root/octopus-app
-docker compose pull && docker compose up -d   # 更新镜像并重启
-docker compose logs -f
+docker compose up -d --force-recreate --no-deps octopus
+
+# 3) 自检
 docker compose ps
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18081/
+docker compose logs -f
 ```
 
 **美国反代**
@@ -92,7 +106,8 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18081/
 - 热导出示例（不停服）：`.backup` → `DELETE FROM relay_logs; VACUUM;`
 
 **部署约定**
-- 改代码后：commit → 构建/推送 `ghcr.io/sycho3/octopus:dev` → 加拿大 `docker compose pull && up -d`
+- 改代码后：在 `/root/octopus` 本地 `docker build` → `/root/octopus-app` 用本地镜像 `compose up -d --force-recreate`
+- **默认不要 `git push`，也不要 `docker compose pull` / 推 GHCR**（除非用户明确要求）
 - 不要把生产 data 提交进 git
 
 ## 架构概览
