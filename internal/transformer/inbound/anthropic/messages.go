@@ -1781,6 +1781,15 @@ func (i *MessagesInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 	return i.streamAggregator.BuildAndReset(), nil
 }
 
+// PeekInternalResponse returns the current aggregate without consuming it.
+// Stream validation uses this before the final GetInternalResponse call.
+func (i *MessagesInbound) PeekInternalResponse(ctx context.Context) (*model.InternalLLMResponse, error) {
+	if i.storedResponse != nil {
+		return i.storedResponse, nil
+	}
+	return i.streamAggregator.Response(), nil
+}
+
 // mergeToolCall merges a tool call delta into the existing tool calls slice
 func mergeToolCall(toolCalls []model.ToolCall, delta model.ToolCall) []model.ToolCall {
 	// Find existing tool call by index

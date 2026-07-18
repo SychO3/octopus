@@ -1151,15 +1151,23 @@ func isEmptyCompletionResponse(resp *model.InternalLLMResponse) bool {
 	return true
 }
 
-func (ra *relayAttempt) streamHasSubstantiveContent() bool {
-	type responseGetter interface {
-		GetInternalResponse(context.Context) (*model.InternalLLMResponse, error)
-	}
-	getter, ok := ra.inAdapter.(responseGetter)
+type internalResponsePeeker interface {
+	PeekInternalResponse(context.Context) (*model.InternalLLMResponse, error)
+}
+
+func peekInternalResponse(inAdapter model.Inbound) (*model.InternalLLMResponse, error) {
+	peeker, ok := inAdapter.(internalResponsePeeker)
 	if !ok {
+		return nil, nil
+	}
+	return peeker.PeekInternalResponse(context.Background())
+}
+
+func (ra *relayAttempt) streamHasSubstantiveContent() bool {
+	if _, ok := ra.inAdapter.(internalResponsePeeker); !ok {
 		return true
 	}
-	resp, err := getter.GetInternalResponse(context.Background())
+	resp, err := peekInternalResponse(ra.inAdapter)
 	if err != nil || resp == nil {
 		return false
 	}
@@ -1356,15 +1364,12 @@ func shouldSuppressEmptyStreamChunk(chunk *model.InternalLLMResponse, inAdapter 
 	if chunk == nil {
 		return false
 	}
-	type responseGetter interface {
-		GetInternalResponse(context.Context) (*model.InternalLLMResponse, error)
-	}
 	if chunk.Object == "[DONE]" {
-		getter, ok := inAdapter.(responseGetter)
+		_, ok := inAdapter.(internalResponsePeeker)
 		if !ok {
 			return false
 		}
-		resp, err := getter.GetInternalResponse(context.Background())
+		resp, err := peekInternalResponse(inAdapter)
 		if err != nil || resp == nil {
 			return true
 		}
@@ -1381,11 +1386,11 @@ func shouldSuppressEmptyStreamChunk(chunk *model.InternalLLMResponse, inAdapter 
 			return false
 		}
 	}
-	getter, ok := inAdapter.(responseGetter)
+	_, ok := inAdapter.(internalResponsePeeker)
 	if !ok {
 		return false
 	}
-	resp, _ := getter.GetInternalResponse(context.Background())
+	resp, _ := peekInternalResponse(inAdapter)
 	if resp == nil {
 		return true
 	}
@@ -1414,14 +1419,11 @@ func shouldSuppressEmptyStreamEvents(events []model.StreamEvent, inAdapter model
 	if !hasStop {
 		return false
 	}
-	type responseGetter interface {
-		GetInternalResponse(context.Context) (*model.InternalLLMResponse, error)
-	}
-	getter, ok := inAdapter.(responseGetter)
+	_, ok := inAdapter.(internalResponsePeeker)
 	if !ok {
 		return false
 	}
-	resp, _ := getter.GetInternalResponse(context.Background())
+	resp, _ := peekInternalResponse(inAdapter)
 	if resp == nil {
 		return true
 	}

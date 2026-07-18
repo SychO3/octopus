@@ -865,6 +865,15 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 	return i.streamAggregator.BuildAndReset(), nil
 }
 
+// PeekInternalResponse returns the current aggregate without consuming it.
+// Stream validation uses this before the final GetInternalResponse call.
+func (i *ResponseInbound) PeekInternalResponse(ctx context.Context) (*model.InternalLLMResponse, error) {
+	if i.storedResponse != nil {
+		return i.storedResponse, nil
+	}
+	return i.streamAggregator.Response(), nil
+}
+
 // formatSSEData formats data as SSE data line
 func formatSSEData(data []byte) []byte {
 	return []byte(fmt.Sprintf("data: %s\n\n", string(data)))
