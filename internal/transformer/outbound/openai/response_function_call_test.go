@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -46,6 +47,9 @@ func TestConvertInputFromMessagesGeneratesFunctionCallIDAndItemReference(t *test
 	}
 	if functionCall.ID == "" {
 		t.Error("function_call item missing ID")
+	}
+	if !strings.HasPrefix(functionCall.ID, "fc_") {
+		t.Errorf("function_call input IDs must use the OpenAI fc_ prefix, got %q", functionCall.ID)
 	}
 	if functionCall.CallID != "call_abc123" {
 		t.Errorf("expected call_id=call_abc123, got %s", functionCall.CallID)

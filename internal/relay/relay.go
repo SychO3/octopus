@@ -1188,6 +1188,112 @@ func isEmptyPassthroughStream(rawStream []byte) bool {
 	return true
 }
 
+func responsesPassthroughHasSubstantiveContent(data []byte) bool {
+	if bytes.Contains(data, []byte("response.output_text.delta")) ||
+		bytes.Contains(data, []byte("response.function_call_arguments.delta")) ||
+		bytes.Contains(data, []byte("response.file_search_call.results")) {
+		return true
+	}
+
+	pending := append([]byte(nil), data...)
+	for _, frame := range popCompleteSSEFrames(&pending) {
+		if responsesPassthroughFrameHasSubstantiveContent(frame) {
+			return true
+		}
+	}
+	if len(bytes.TrimSpace(pending)) > 0 && responsesPassthroughFrameHasSubstantiveContent(pending) {
+		return true
+	}
+	return false
+}
+
+func responsesPassthroughFrameHasSubstantiveContent(frame []byte) bool {
+	for _, line := range bytes.Split(frame, []byte("\n")) {
+		line = bytes.TrimRight(line, "\r")
+		body, ok := bytes.CutPrefix(line, []byte("data:"))
+		if !ok {
+			continue
+		}
+		body = bytes.TrimSpace(body)
+		if len(body) == 0 || bytes.Equal(body, []byte("[DONE]")) {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal(body, &event); err != nil {
+			continue
+		}
+		if responsesPassthroughEventHasSubstantiveContent(event) {
+			return true
+		}
+	}
+	return false
+}
+
+func responsesPassthroughEventHasSubstantiveContent(event map[string]any) bool {
+	typ, _ := event["type"].(string)
+	switch typ {
+	case "response.output_item.added", "response.output_item.done":
+		item, _ := event["item"].(map[string]any)
+		return responsesItemMapHasSubstantiveContent(item)
+	case "response.completed", "response.incomplete":
+		response, _ := event["response"].(map[string]any)
+		output, _ := response["output"].([]any)
+		return responsesOutputMapHasSubstantiveContent(output)
+	case "response.created", "response.in_progress":
+		return false
+	default:
+		return strings.HasPrefix(typ, "response.")
+	}
+}
+
+func responsesOutputMapHasSubstantiveContent(items []any) bool {
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if responsesItemMapHasSubstantiveContent(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func responsesItemMapHasSubstantiveContent(item map[string]any) bool {
+	typ, _ := item["type"].(string)
+	if typ == "" {
+		return false
+	}
+
+	switch typ {
+	case "message":
+		content, _ := item["content"].([]any)
+		for _, rawPart := range content {
+			part, _ := rawPart.(map[string]any)
+			partType, _ := part["type"].(string)
+			switch partType {
+			case "output_text":
+				if text, _ := part["text"].(string); text != "" {
+					return true
+				}
+			case "refusal":
+				refusal, _ := part["refusal"].(string)
+				text, _ := part["text"].(string)
+				if refusal != "" || text != "" {
+					return true
+				}
+			default:
+				if partType != "" {
+					return true
+				}
+			}
+		}
+		return false
+	case "output_text":
+		text, _ := item["text"].(string)
+		return text != ""
+	default:
+		return true
+	}
+}
+
 func isEmptyPassthroughResponseBody(body []byte) bool {
 	if len(body) == 0 {
 		return true
@@ -1615,16 +1721,17 @@ func (ra *relayAttempt) handleStreamResponsePassthroughV2(ctx context.Context, r
 		if !isResponsesAPI || passthroughHasContent {
 			return data, nil
 		}
-		if bytes.Contains(data, []byte("response.output_text.delta")) ||
-			bytes.Contains(data, []byte("response.function_call_arguments.delta")) ||
-			bytes.Contains(data, []byte("response.file_search_call.results")) {
+		combined := data
+		if len(pendingPassthrough) > 0 {
+			combined = make([]byte, len(pendingPassthrough)+len(data))
+			copy(combined, pendingPassthrough)
+			copy(combined[len(pendingPassthrough):], data)
+		}
+		if responsesPassthroughHasSubstantiveContent(combined) {
 			passthroughHasContent = true
 		}
 		if passthroughHasContent {
 			if len(pendingPassthrough) > 0 {
-				combined := make([]byte, len(pendingPassthrough)+len(data))
-				copy(combined, pendingPassthrough)
-				copy(combined[len(pendingPassthrough):], data)
 				pendingPassthrough = nil
 				return combined, nil
 			}

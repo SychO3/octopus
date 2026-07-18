@@ -577,7 +577,7 @@ func derivedAnthropicCacheMetadata(req *model.InternalLLMRequest) (*string, *str
 	}
 
 	sum := sha256.Sum256(projection.payload)
-	key := "anthropic-cache-" + hex.EncodeToString(sum[:])
+	key := "anthropic-cache-" + hex.EncodeToString(sum[:24])
 	return &key, projection.retention
 }
 
@@ -1934,19 +1934,19 @@ func (o *ResponseOutbound) PassthroughConfig() model.PassthroughConfig {
 	}
 }
 
-// generateResponsesItemID generates a unique ID for Responses API items (function_call, etc.).
-// Format matches OpenAI's pattern: item_<random_base62_string>
+// generateResponsesItemID generates a unique ID for Responses API function_call items.
+// OpenAI requires function_call input IDs to use the fc_ prefix.
 func generateResponsesItemID() string {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
 		// fallback: use timestamp + counter
-		return fmt.Sprintf("item_%016x%08x", time.Now().UnixNano(), itemIDCounter.Add(1))
+		return fmt.Sprintf("fc_%016x%08x", time.Now().UnixNano(), itemIDCounter.Add(1))
 	}
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	for i := range b {
 		b[i] = charset[b[i]%byte(len(charset))]
 	}
-	return "item_" + string(b)
+	return "fc_" + string(b)
 }
 
 var itemIDCounter atomic.Uint64

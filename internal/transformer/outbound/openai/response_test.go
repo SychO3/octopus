@@ -238,6 +238,9 @@ func TestConvertToResponsesRequestDerivesPromptCacheKeyFromAnthropicCacheControl
 	if out.PromptCacheKey == nil || *out.PromptCacheKey == "" {
 		t.Fatalf("expected derived prompt_cache_key, got %+v", out.PromptCacheKey)
 	}
+	if len(*out.PromptCacheKey) > 64 {
+		t.Fatalf("derived prompt_cache_key must fit upstream 64-character limit, got len=%d key=%q", len(*out.PromptCacheKey), *out.PromptCacheKey)
+	}
 	if out.PromptCacheRetention != nil {
 		t.Fatalf("expected no retention for 5m cache control, got %+v", out.PromptCacheRetention)
 	}

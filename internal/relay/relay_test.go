@@ -19,6 +19,7 @@ import (
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
+	"github.com/bestruirui/octopus/internal/relay/stream"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
@@ -444,7 +445,6 @@ func TestHandleStreamResponsePassthroughAnthropicWaitsForToolIdentity(t *testing
 	}
 }
 
-
 func TestHandleStreamResponsePassthroughOpenAIResponsesPreservesRawSSE(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -493,6 +493,144 @@ func TestHandleStreamResponsePassthroughOpenAIResponsesPreservesRawSSE(t *testin
 		t.Fatalf("handleStreamResponsePassthroughV2() error = %v", err)
 	}
 	if got := recorder.Body.String(); got != rawSSE {
+		t.Fatalf("expected raw SSE to be preserved exactly, got %q want %q", got, rawSSE)
+	}
+}
+
+func TestHandleStreamResponsePassthroughOpenAIResponsesForwardsFunctionCallItem(t *testing.T) {
+	rawSSE := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[],"status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"call_1","type":"function_call","status":"completed","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[{"id":"call_1","type":"function_call","status":"completed","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"}],"status":"completed"}}`,
+		"",
+	}, "\n")
+
+	writer := &notifyStreamWriter{header: http.Header{}}
+	ra, _ := newOpenAIResponsesPassthroughAttempt(writer)
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(rawSSE)),
+	}
+
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	if err := ra.handleStreamResponsePassthroughV2(context.Background(), response, cfg); err != nil {
+		t.Fatalf("function_call output item is client-visible payload and must not be treated as an empty stream: %v", err)
+	}
+	if got := writer.buf.String(); got != rawSSE {
+		t.Fatalf("expected raw SSE to be preserved exactly, got %q want %q", got, rawSSE)
+	}
+}
+
+func TestHandleStreamResponsePassthroughOpenAIResponsesForwardsCompletedOutputOnly(t *testing.T) {
+	rawSSE := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[],"status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}],"status":"completed"}],"status":"completed"}}`,
+		"",
+	}, "\n")
+
+	writer := &notifyStreamWriter{header: http.Header{}}
+	ra, _ := newOpenAIResponsesPassthroughAttempt(writer)
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(rawSSE)),
+	}
+
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	if err := ra.handleStreamResponsePassthroughV2(context.Background(), response, cfg); err != nil {
+		t.Fatalf("terminal response.output is client-visible payload and must not be treated as an empty stream: %v", err)
+	}
+	if got := writer.buf.String(); got != rawSSE {
+		t.Fatalf("expected raw SSE to be preserved exactly, got %q want %q", got, rawSSE)
+	}
+}
+
+func TestHandleStreamResponsePassthroughOpenAIResponsesForwardsUnknownOutputItem(t *testing.T) {
+	rawSSE := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[],"status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"item_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"exec","input":"pwd"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[{"id":"item_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"exec","input":"pwd"}],"status":"completed"}}`,
+		"",
+	}, "\n")
+
+	writer := &notifyStreamWriter{header: http.Header{}}
+	ra, _ := newOpenAIResponsesPassthroughAttempt(writer)
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(rawSSE)),
+	}
+
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	if err := ra.handleStreamResponsePassthroughV2(context.Background(), response, cfg); err != nil {
+		t.Fatalf("unknown Responses output items are passthrough payload and must not be treated as an empty stream: %v", err)
+	}
+	if got := writer.buf.String(); got != rawSSE {
+		t.Fatalf("expected raw SSE to be preserved exactly, got %q want %q", got, rawSSE)
+	}
+}
+
+func TestHandleStreamResponsePassthroughOpenAIResponsesControlOnlyStreamFails(t *testing.T) {
+	rawSSE := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[],"status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.in_progress","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[],"status":"in_progress"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[],"status":"completed"}}`,
+		"",
+	}, "\n")
+
+	writer := &notifyStreamWriter{header: http.Header{}}
+	ra, _ := newOpenAIResponsesPassthroughAttempt(writer)
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(rawSSE)),
+	}
+
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	err := ra.handleStreamResponsePassthroughV2(context.Background(), response, cfg)
+	if !errors.Is(err, stream.ErrEmptyUpstreamStream) {
+		t.Fatalf("control-only stream should still fail over before writing, got %v", err)
+	}
+	if got := writer.buf.String(); got != "" {
+		t.Fatalf("control-only stream must not be forwarded before failover, got %q", got)
+	}
+}
+
+func TestHandleStreamResponsePassthroughOpenAIResponsesDetectsContentAcrossChunks(t *testing.T) {
+	chunks := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[],"status":"in_progress"}}` + "\n\n" +
+			`data: {"type":"response.output_`,
+		`text.delta","delta":"hello"}` + "\n\n" +
+			`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-4o","created_at":1,"output":[],"status":"completed"}}` + "\n\n",
+	}
+	rawSSE := strings.Join(chunks, "")
+
+	writer := &notifyStreamWriter{header: http.Header{}}
+	ra, _ := newOpenAIResponsesPassthroughAttempt(writer)
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       &chunkedReadCloser{chunks: [][]byte{[]byte(chunks[0]), []byte(chunks[1])}},
+	}
+
+	pt := ra.outAdapter.(transformerModel.PassthroughCapable)
+	cfg := pt.PassthroughConfig()
+	if err := ra.handleStreamResponsePassthroughV2(context.Background(), response, cfg); err != nil {
+		t.Fatalf("content split across upstream chunks must not be treated as an empty stream: %v", err)
+	}
+	if got := writer.buf.String(); got != rawSSE {
 		t.Fatalf("expected raw SSE to be preserved exactly, got %q want %q", got, rawSSE)
 	}
 }
