@@ -22,6 +22,7 @@ import (
 	"github.com/bestruirui/octopus/internal/relay/stream"
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	inAnthropic "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	outAnthropic "github.com/bestruirui/octopus/internal/transformer/outbound/anthropic"
@@ -2518,7 +2519,7 @@ func anthropicMessageJSONToSSE(body []byte) ([]byte, error) {
 		Content      []json.RawMessage          `json:"content"`
 		StopReason   *string                    `json:"stop_reason"`
 		StopSequence *string                    `json:"stop_sequence"`
-		Usage        *model.Usage               `json:"usage"`
+		Usage        *inAnthropic.Usage         `json:"usage"`
 		Raw          map[string]json.RawMessage `json:"-"`
 	}
 	if err := json.Unmarshal(body, &msg); err != nil {

@@ -314,6 +314,11 @@ func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatJSON(t *testi
 	if strings.Contains(got, "chat.completion") {
 		t.Fatalf("raw OpenAI JSON leaked to Anthropic stream client: %q", got)
 	}
+	// Paseo derives context usage from Anthropic's input_tokens/output_tokens.
+	// Losing these fields makes a long session appear as 0% context used.
+	if !strings.Contains(got, `"usage":{"input_tokens":2,"output_tokens":3}`) {
+		t.Fatalf("expected converted Anthropic usage to preserve input/output tokens, got %q", got)
+	}
 }
 
 func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatSSEMessageChoices(t *testing.T) {
