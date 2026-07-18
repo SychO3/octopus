@@ -9,6 +9,27 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/model"
 )
 
+// Anthropic names a forced function tool with type "tool", while the
+// Responses API requires the equivalent selector to use type "function".
+func TestConvertToolChoiceToResponsesNormalizesAnthropicNamedTool(t *testing.T) {
+	name := "lookup_temperature"
+	tests := []struct {
+		name      string
+		inputType string
+	}{
+		{name: "anthropic", inputType: "tool"},
+		{name: "openai", inputType: "function"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertToolChoiceToResponses(&model.ToolChoice{NamedToolChoice: &model.NamedToolChoice{Type: tt.inputType, Name: &name}})
+			if got == nil || got.Type == nil || *got.Type != "function" || got.Name == nil || *got.Name != name {
+				t.Fatalf("expected Responses function selector for %q input, got %+v", tt.inputType, got)
+			}
+		})
+	}
+}
+
 // TestConvertToResponsesRequestForwardsVerbosity verifies O-M8: the gpt-5
 // verbosity knob on the internal request lands on
 // ResponsesRequest.Text.Verbosity regardless of whether ResponseFormat is

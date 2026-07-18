@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 const baseURL = process.env.OCTOPUS_TEST_URL || "http://127.0.0.1:18081";
 const dbPath = process.env.OCTOPUS_TEST_DB || "/root/octopus-app/data/data.db";
 const groupID = Number(process.env.OCTOPUS_TEST_GROUP_ID || 19);
+const sourceGroupID = Number(process.env.OCTOPUS_TEST_SOURCE_GROUP_ID || 0);
 const requestedModel = process.env.OCTOPUS_TEST_MODEL || "protocol-cross-test";
 const onlyChannel = Number(process.env.OCTOPUS_TEST_CHANNEL_ID || 0);
 const casePattern = process.env.OCTOPUS_TEST_CASE ? new RegExp(process.env.OCTOPUS_TEST_CASE) : null;
@@ -40,6 +41,23 @@ function loadFixture() {
   if (!items.length) throw new Error(`group ${groupID} has no items`);
   if (!keys.length) throw new Error("protocol-cross-test API key not found");
   return { items, apiKey: keys[0].api_key };
+}
+
+async function syncFixture(token) {
+  if (!sourceGroupID) return;
+  const sourceItems = sql(`SELECT channel_id, model_name, priority, weight FROM group_items WHERE group_id=${sourceGroupID} ORDER BY priority, id`);
+  const currentItems = sql(`SELECT id FROM group_items WHERE group_id=${groupID}`);
+  if (!sourceItems.length) throw new Error(`source group ${sourceGroupID} has no items`);
+  const response = await fetch(`${baseURL}/api/v1/group/update`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      id: groupID,
+      items_to_delete: currentItems.map((item) => item.id),
+      items_to_add: sourceItems,
+    }),
+  });
+  if (!response.ok) throw new Error(`fixture sync failed: ${response.status} ${await response.text()}`);
 }
 
 async function updatePriorities(items, targetChannelID, token) {
@@ -182,10 +200,11 @@ async function runCase(test, channel, apiKey) {
 }
 
 async function main() {
+  const token = adminToken();
+  await syncFixture(token);
   const { items, apiKey } = loadFixture();
   const selected = onlyChannel ? items.filter((item) => item.channel_id === onlyChannel) : items;
   if (!selected.length) throw new Error(`channel ${onlyChannel} is not in group ${groupID}`);
-  const token = adminToken();
   const results = [];
   try {
     for (const channel of selected) {

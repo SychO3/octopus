@@ -1278,7 +1278,11 @@ func convertToolChoiceToResponses(tc *model.ToolChoice) *ResponsesToolChoice {
 	if tc.ToolChoice != nil {
 		result.Mode = tc.ToolChoice
 	} else if tc.NamedToolChoice != nil {
-		result.Type = &tc.NamedToolChoice.Type
+		choiceType := tc.NamedToolChoice.Type
+		if choiceType == "tool" {
+			choiceType = "function"
+		}
+		result.Type = &choiceType
 		if name := tc.NamedToolChoice.ResolvedFunctionName(); name != "" {
 			n := name
 			result.Name = &n
