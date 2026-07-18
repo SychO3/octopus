@@ -502,7 +502,7 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) ([]byte, *mod
 	inAdapter := inbound.Get(inboundType)
 	internalRequest, err := inAdapter.TransformRequest(c.Request.Context(), body)
 	if err != nil {
-		resp.Error(c, http.StatusInternalServerError, err.Error())
+		resp.Error(c, http.StatusBadRequest, err.Error())
 		return nil, nil, nil, err
 	}
 
@@ -2233,11 +2233,15 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 	estimatedInputTokens := estimateAnthropicInputTokens(ra.rawBody)
 
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
+		body, err := readResponseBodyLimited(response.Body, maxSSEEventSize)
+		if err != nil {
+			return err
+		}
 		if converted, err := ra.convertOpenAIJSONToAnthropicSSE(ctx, body, response); err != nil {
 			return err
 		} else if len(converted) > 0 {
 			writer := ra.getStreamWriter()
+			copyProxyResponseHeaders(writer.Header(), response.Header)
 			writer.Header().Set("Content-Type", "text/event-stream")
 			writer.Header().Set("Cache-Control", "no-cache")
 			writer.Header().Set("Connection", "keep-alive")
@@ -2260,6 +2264,7 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 	writer := ra.getStreamWriter()
 
 	// 设置 SSE 响应头
+	copyProxyResponseHeaders(writer.Header(), response.Header)
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Connection", "keep-alive")
@@ -2707,6 +2712,20 @@ func writeAnthropicJSONSSE(out *bytes.Buffer, eventName string, payload any) err
 	return nil
 }
 
+func readResponseBodyLimited(reader io.Reader, limit int) ([]byte, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("invalid response body limit %d", limit)
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if len(body) > limit {
+		return nil, fmt.Errorf("upstream response body exceeds limit of %d bytes", limit)
+	}
+	return body, nil
+}
+
 // handleResponsePassthroughAnthropic 非流式直通：upstream JSON 原样写回客户端；旁路解析用于 metrics。
 func (ra *relayAttempt) handleResponsePassthroughAnthropic(ctx context.Context, response *http.Response) error {
 	body, err := io.ReadAll(response.Body)
@@ -2724,6 +2743,7 @@ func (ra *relayAttempt) handleResponsePassthroughAnthropic(ctx context.Context, 
 		contentType = "application/json"
 	}
 	body = ra.rewriteUpstreamModelInChunk(body)
+	copyProxyResponseHeaders(ra.c.Writer.Header(), response.Header)
 	ra.c.Data(http.StatusOK, contentType, body)
 
 	// 旁路解析：复用 outbound.TransformResponse → inbound.TransformResponse 的 storedResponse

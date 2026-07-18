@@ -212,7 +212,7 @@ func transformProtocolSSEError(ctx context.Context, inAdapter model.Inbound, sta
 		Error: &model.ResponseError{
 			StatusCode: statusCode,
 			Detail: model.ErrorDetail{
-				Type:    "api_error",
+				Type:    resp.AnthropicErrorType(statusCode),
 				Message: message,
 			},
 		},

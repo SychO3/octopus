@@ -248,6 +248,21 @@ func TestFlushRelayFailure_StreamForcesSSEError(t *testing.T) {
 	}
 }
 
+func TestFlushRelayFailure_AnthropicRateLimitUsesProtocolType(t *testing.T) {
+	setupRelayTestDB(t)
+	setHeartbeatSettings(t, "1", "0")
+
+	c, w := newTestGinContext(t)
+	hb := startEarlyHeartbeat(c, true)
+	defer hb.Stop()
+
+	flushRelayFailure(c, hb, inbound.Get(inbound.InboundTypeAnthropic), true, http.StatusTooManyRequests, "rate limited")
+
+	if !strings.Contains(w.Body.String(), `"type":"rate_limit_error"`) {
+		t.Fatalf("expected Anthropic rate_limit_error, got %q", w.Body.String())
+	}
+}
+
 func TestFlushRelayFailure_StreamUsesOpenAIChatErrorShape(t *testing.T) {
 	setupRelayTestDB(t)
 	setHeartbeatSettings(t, "1", "0")

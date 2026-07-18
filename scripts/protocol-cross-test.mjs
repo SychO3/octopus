@@ -128,6 +128,31 @@ function endpoint(test) {
 function responseShapeOK(test, status, responseText, caseID) {
   if (status !== 200 || !test.expect.every((marker) => responseText.includes(marker))) return false;
   if (test.stream && test.protocol === "chat" && !responseText.includes("[DONE]")) return false;
+  if (test.protocol === "anthropic") {
+    if (!test.stream) {
+      try {
+        const response = JSON.parse(responseText);
+        return response.type === "message" && Array.isArray(response.content) &&
+          Number.isFinite(response.usage?.input_tokens) && Number.isFinite(response.usage?.output_tokens);
+      } catch {
+        return false;
+      }
+    }
+    const events = responseText.split("\n").filter((line) => line.startsWith("data:")).map((line) => {
+      try { return JSON.parse(line.slice(5).trim()); } catch { return null; }
+    }).filter(Boolean);
+    const start = events.find((event) => event.type === "message_start");
+    const delta = events.find((event) => event.type === "message_delta");
+    const messageEvents = events.filter((event) => event.type !== "ping");
+    const startIndex = messageEvents.findIndex((event) => event.type === "message_start");
+    const stopIndex = messageEvents.findIndex((event) => event.type === "message_stop");
+    const startUsage = start?.message?.usage;
+    const effectiveInput = (startUsage?.input_tokens || 0) + (startUsage?.cache_read_input_tokens || 0) + (startUsage?.cache_creation_input_tokens || 0);
+    if (!start || !delta || startIndex !== 0 || stopIndex <= startIndex || !(effectiveInput > 0)) return false;
+    if (!Number.isFinite(delta.usage?.output_tokens)) return false;
+    if (test.name.includes("tool_call") && delta.delta?.stop_reason !== "tool_use") return false;
+    if (test.name.includes("thinking") && (!responseText.includes("thinking_delta") || !responseText.includes("signature_delta"))) return false;
+  }
   if (!test.stream || test.name.includes("tool_call")) return true;
   const chunks = responseText.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim());
   let content = "";
@@ -220,6 +245,7 @@ async function main() {
   }
   const passed = results.filter((item) => item.passed).length;
   process.stderr.write(`completed ${results.length} cases: ${passed} passed, ${results.length - passed} failed\n`);
+  if (passed !== results.length) process.exitCode = 1;
 }
 
 await main();

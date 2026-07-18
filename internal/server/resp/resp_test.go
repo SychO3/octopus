@@ -54,3 +54,26 @@ func TestErrorWithAppErrorUsesFallbackStatus(t *testing.T) {
 		t.Fatalf("status = %d", recorder.Code)
 	}
 }
+
+func TestErrorWithCodeUsesAnthropicEnvelopeForMessages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	ErrorWithCode(ctx, http.StatusNotFound, "relay.model_not_found", "model not found")
+
+	var body struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode Anthropic error: %v", err)
+	}
+	if body.Type != "error" || body.Error.Type != "not_found_error" || body.Error.Message != "model not found" {
+		t.Fatalf("unexpected Anthropic error envelope: %+v", body)
+	}
+}

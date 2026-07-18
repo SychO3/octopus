@@ -275,7 +275,8 @@ func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIResponsesSSE(t *t
 func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"id":"msg_split","choices":[{"index":0,"message":{"role":"assistant","content":"\n"},"finish_reason":"stop"},{"index":1,"message":{"reasoning_content":"thinking first"}},{"index":2,"message":{"content":"visible answer"}}],"object":"chat.completion","created":0,"model":"claude-opus-4.6","usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
+	largeText := strings.Repeat("x", 20*1024) + "visible answer"
+	body := []byte(fmt.Sprintf(`{"id":"msg_split","choices":[{"index":0,"message":{"role":"assistant","content":"\n"},"finish_reason":"stop"},{"index":1,"message":{"reasoning_content":"thinking first"}},{"index":2,"message":{"content":%q}}],"object":"chat.completion","created":0,"model":"claude-opus-4.6","usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`, largeText))
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -300,15 +301,19 @@ func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatJSON(t *testi
 
 	response := &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header: http.Header{
+			"Content-Type":                 []string{"application/json"},
+			"Request-Id":                   []string{"req-stream-fallback"},
+			"Anthropic-Ratelimit-Requests": []string{"42"},
+		},
+		Body: io.NopCloser(bytes.NewReader(body)),
 	}
 
 	if err := ra.handleStreamResponsePassthroughAnthropic(context.Background(), response); err != nil {
 		t.Fatalf("handleStreamResponsePassthroughAnthropic() error = %v", err)
 	}
 	got := recorder.Body.String()
-	if !strings.Contains(got, "event:message_start") || !strings.Contains(got, `"thinking":"thinking first"`) || !strings.Contains(got, `"text":"visible answer"`) {
+	if !strings.Contains(got, "event:message_start") || !strings.Contains(got, `"thinking":"thinking first"`) || !strings.Contains(got, "visible answer") {
 		t.Fatalf("expected OpenAI JSON to be converted to Anthropic SSE, got %q", got)
 	}
 	if strings.Contains(got, "chat.completion") {
@@ -318,6 +323,9 @@ func TestHandleStreamResponsePassthroughAnthropicConvertsOpenAIChatJSON(t *testi
 	// Losing these fields makes a long session appear as 0% context used.
 	if !strings.Contains(got, `"usage":{"input_tokens":2,"output_tokens":3}`) {
 		t.Fatalf("expected converted Anthropic usage to preserve input/output tokens, got %q", got)
+	}
+	if recorder.Header().Get("Request-Id") != "req-stream-fallback" || recorder.Header().Get("Anthropic-Ratelimit-Requests") != "42" {
+		t.Fatalf("expected Anthropic response headers to be preserved, got %v", recorder.Header())
 	}
 }
 
@@ -1080,6 +1088,7 @@ func TestHandlerConvertsOpenAIChatResponseFromAnthropicPassthrough(t *testing.T)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Request-Id", "req-nonstream")
 		_, _ = w.Write([]byte(`{"id":"bad_1","object":"chat.completion","model":"claude-opus-4.6","choices":[{"index":0,"message":{"role":"assistant","content":"converted text"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
 	}))
 	defer server.Close()
@@ -1141,6 +1150,9 @@ func TestHandlerConvertsOpenAIChatResponseFromAnthropicPassthrough(t *testing.T)
 	}
 	if got.Usage.InputTokens != 3 || got.Usage.OutputTokens != 2 {
 		t.Fatalf("expected converted usage input=3 output=2, got %+v", got.Usage)
+	}
+	if recorder.Header().Get("Request-Id") != "req-nonstream" {
+		t.Fatalf("expected non-stream Anthropic response headers to be preserved, got %v", recorder.Header())
 	}
 }
 

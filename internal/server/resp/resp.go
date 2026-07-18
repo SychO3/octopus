@@ -2,6 +2,7 @@ package resp
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/bestruirui/octopus/internal/apperror"
 	"github.com/gin-gonic/gin"
@@ -40,12 +41,51 @@ func ErrorWithCode(c *gin.Context, status int, errorCode string, message string)
 }
 
 func ErrorWithCodeAndParams(c *gin.Context, status int, errorCode string, message string, params map[string]any) {
+	if isAnthropicMessagesRequest(c) {
+		c.AbortWithStatusJSON(status, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    AnthropicErrorType(status),
+				"message": message,
+			},
+		})
+		return
+	}
 	c.AbortWithStatusJSON(status, ResponseStruct{
 		Code:      status,
 		ErrorCode: errorCode,
 		Message:   message,
 		Params:    params,
 	})
+}
+
+func isAnthropicMessagesRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	path := c.Request.URL.Path
+	return path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/")
+}
+
+func AnthropicErrorType(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "invalid_request_error"
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	case http.StatusForbidden:
+		return "permission_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case 529:
+		return "overloaded_error"
+	default:
+		return "api_error"
+	}
 }
 
 func InvalidJSON(c *gin.Context) {
