@@ -505,7 +505,6 @@ type ResponsesTextFormat struct {
 
 type ResponsesReasoning struct {
 	Effort          string  `json:"effort,omitempty"`
-	MaxTokens       *int64  `json:"max_tokens,omitempty"`
 	Summary         *string `json:"summary,omitempty"`
 	GenerateSummary *string `json:"generate_summary,omitempty"`
 }
@@ -937,10 +936,9 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 	}
 
 	// Convert reasoning
-	if req.ReasoningEffort != "" || req.ReasoningBudget != nil || responsesOptions.ReasoningSummary != nil || responsesOptions.ReasoningGenerateSummary != nil {
+	if req.ReasoningEffort != "" || responsesOptions.ReasoningSummary != nil || responsesOptions.ReasoningGenerateSummary != nil {
 		result.Reasoning = &ResponsesReasoning{
 			Effort:          req.ReasoningEffort,
-			MaxTokens:       req.ReasoningBudget,
 			Summary:         responsesOptions.ReasoningSummary,
 			GenerateSummary: responsesOptions.ReasoningGenerateSummary,
 		}

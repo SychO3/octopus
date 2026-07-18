@@ -30,6 +30,32 @@ func TestConvertToolChoiceToResponsesNormalizesAnthropicNamedTool(t *testing.T) 
 	}
 }
 
+func TestConvertToResponsesRequestOmitsAnthropicThinkingBudget(t *testing.T) {
+	budget := int64(1024)
+	req := &model.InternalLLMRequest{
+		Model:           "gpt-5.6-luna",
+		ReasoningEffort: "high",
+		ReasoningBudget: &budget,
+	}
+
+	body, err := json.Marshal(ConvertToResponsesRequest(req))
+	if err != nil {
+		t.Fatalf("marshal responses request: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal responses request: %v", err)
+	}
+	reasoning, ok := payload["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "high" {
+		t.Fatalf("expected reasoning.effort=high, got %#v", payload["reasoning"])
+	}
+	if _, exists := reasoning["max_tokens"]; exists {
+		t.Fatalf("Responses upstreams reject reasoning.max_tokens, got %#v", reasoning)
+	}
+}
+
 // TestConvertToResponsesRequestForwardsVerbosity verifies O-M8: the gpt-5
 // verbosity knob on the internal request lands on
 // ResponsesRequest.Text.Verbosity regardless of whether ResponseFormat is
