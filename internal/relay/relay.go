@@ -1444,11 +1444,15 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 
 	var pendingOutput []byte
 	hasContent := false
+	chatDoneWritten := false
 
 	transform := func(ctx context.Context, data []byte) ([]byte, error) {
 		output, err := ra.transformStreamData(ctx, string(data))
 		if err != nil || len(output) == 0 {
 			return output, err
+		}
+		if bytes.Contains(output, []byte("data: [DONE]")) {
+			chatDoneWritten = true
 		}
 		if hasContent {
 			return output, nil
@@ -1473,10 +1477,11 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		firstTokenTimeout = time.Duration(ra.firstTokenTimeOutSec) * time.Second
 	}
 
+	writer := ra.getStreamWriter()
 	processor := stream.NewStreamProcessor(stream.StreamConfig{
 		Source:            stream.NewSSESource(response.Body, maxSSEEventSize),
 		Transform:         transform,
-		Writer:            ra.getStreamWriter(),
+		Writer:            writer,
 		Context:           ctx,
 		FirstTokenTimeout: firstTokenTimeout,
 		HeartbeatInterval: streamHeartbeatInterval(),
@@ -1502,6 +1507,18 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		// 客户端断连可能表现为本地预算超时，需走专用判定。
 		if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, err); timeoutErr != nil {
 			return timeoutErr
+		}
+	}
+	if err == nil && processor.PayloadWritten() && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIChatCompletion && !chatDoneWritten {
+		done, transformErr := ra.encodeInboundStreamEvents(ctx, []model.StreamEvent{{Kind: model.StreamEventKindDone}})
+		if transformErr != nil {
+			return transformErr
+		}
+		if len(done) > 0 {
+			if _, writeErr := writer.Write(done); writeErr != nil {
+				return writeErr
+			}
+			writer.Flush()
 		}
 	}
 

@@ -28,6 +28,78 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestHandleStreamResponseTerminatesConvertedChatSSE(t *testing.T) {
+	tests := map[string]string{
+		"text": `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-6","role":"assistant","usage":{"input_tokens":1,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`,
+		"tool call": `event: message_start
+data: {"type":"message_start","message":{"id":"msg_2","model":"claude-sonnet-4-6","role":"assistant","usage":{"input_tokens":1,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`,
+		"tool result": `event: message_start
+data: {"type":"message_start","message":{"id":"msg_3","model":"claude-sonnet-4-6","role":"assistant","usage":{"input_tokens":1,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"RESULT_OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`,
+	}
+	tests["already terminated"] = tests["text"] + "data: [DONE]\n\n"
+
+	for name, rawSSE := range tests {
+		t.Run(name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			internalReq := &transformerModel.InternalLLMRequest{Model: "claude-sonnet-4-6", Stream: boolPtr(true), RawAPIFormat: transformerModel.APIFormatOpenAIChatCompletion}
+			req := &relayRequest{
+				c: c, inAdapter: inbound.Get(inbound.InboundTypeOpenAIChat), internalRequest: internalReq,
+				metrics: NewRelayMetrics(1, internalReq.Model, nil, internalReq), requestModel: internalReq.Model,
+			}
+			req.heartbeat = startEarlyHeartbeat(c, true)
+			ra := &relayAttempt{relayRequest: req, outAdapter: outbound.Get(outbound.OutboundTypeAnthropic)}
+			response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(rawSSE))}
+
+			if err := ra.handleStreamResponse(context.Background(), response); err != nil {
+				t.Fatalf("handleStreamResponse() error = %v", err)
+			}
+			if count := strings.Count(recorder.Body.String(), "data: [DONE]\n\n"); count != 1 {
+				t.Fatalf("converted Chat SSE must end with exactly one [DONE] frame, got %d in %q", count, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleStreamResponsePassthroughAnthropicPreservesRawSSE(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
