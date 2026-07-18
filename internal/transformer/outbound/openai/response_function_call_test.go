@@ -9,8 +9,9 @@ import (
 	"github.com/samber/lo"
 )
 
-func TestConvertInputFromMessagesGeneratesFunctionCallIDAndItemReference(t *testing.T) {
-	// Test that function_call items get unique IDs and function_call_output items get item_reference
+func TestConvertInputFromMessagesUsesCallIDWithoutItemReference(t *testing.T) {
+	// Responses-compatible upstreams correlate tool results by call_id and reject
+	// the non-standard item_reference field.
 	msgs := []model.Message{
 		{
 			Role: "assistant",
@@ -55,16 +56,16 @@ func TestConvertInputFromMessagesGeneratesFunctionCallIDAndItemReference(t *test
 		t.Errorf("expected call_id=call_abc123, got %s", functionCall.CallID)
 	}
 
-	// Check function_call_output has item_reference
+	// The tool result keeps call_id but must not add item_reference.
 	functionCallOutput := input.Items[1]
 	if functionCallOutput.Type != "function_call_output" {
 		t.Fatalf("expected second item to be function_call_output, got %s", functionCallOutput.Type)
 	}
-	if functionCallOutput.ItemReference == nil {
-		t.Fatal("function_call_output item missing item_reference")
+	if functionCallOutput.CallID != "call_abc123" {
+		t.Errorf("expected call_id=call_abc123, got %s", functionCallOutput.CallID)
 	}
-	if *functionCallOutput.ItemReference != functionCall.ID {
-		t.Errorf("item_reference=%s doesn't match function_call ID=%s", *functionCallOutput.ItemReference, functionCall.ID)
+	if functionCallOutput.ItemReference != nil {
+		t.Errorf("function_call_output must omit item_reference, got %q", *functionCallOutput.ItemReference)
 	}
 }
 
@@ -176,8 +177,9 @@ func TestSanitizeResponsesRawItemsBackfillsMissingFunctionCallID(t *testing.T) {
 	}
 }
 
-func TestMarshalResponsesInputItemsPreservesItemReference(t *testing.T) {
-	// Test end-to-end: Messages -> Items -> JSON preserves item_reference
+func TestMarshalResponsesInputItemsOmitsItemReference(t *testing.T) {
+	// End-to-end conversion must retain a valid function_call ID while omitting
+	// item_reference, which Responses-compatible upstreams reject.
 	msgs := []model.Message{
 		{
 			Role: "assistant",
@@ -211,9 +213,9 @@ func TestMarshalResponsesInputItemsPreservesItemReference(t *testing.T) {
 		t.Fatalf("failed to unmarshal: %v", err)
 	}
 
-	// Find function_call and function_call_output, then verify item_reference matches function_call.id
+	// Find function_call and function_call_output, then verify call_id is the
+	// only link between them.
 	var functionCallID string
-	var itemReference string
 	var foundCall, foundOutput bool
 	for _, item := range items {
 		switch item["type"] {
@@ -223,9 +225,12 @@ func TestMarshalResponsesInputItemsPreservesItemReference(t *testing.T) {
 				foundCall = true
 			}
 		case "function_call_output":
-			if ref, ok := item["item_reference"].(string); ok {
-				itemReference = ref
-				foundOutput = true
+			foundOutput = true
+			if _, ok := item["item_reference"]; ok {
+				t.Fatalf("function_call_output must omit item_reference, got %v", item["item_reference"])
+			}
+			if item["call_id"] != "call_test123" {
+				t.Fatalf("expected call_id=call_test123, got %v", item["call_id"])
 			}
 		}
 	}
@@ -237,9 +242,6 @@ func TestMarshalResponsesInputItemsPreservesItemReference(t *testing.T) {
 		t.Fatal("function_call item has empty id")
 	}
 	if !foundOutput {
-		t.Fatal("function_call_output item missing item_reference")
-	}
-	if itemReference != functionCallID {
-		t.Errorf("item_reference=%s doesn't match function_call id=%s", itemReference, functionCallID)
+		t.Fatal("function_call_output item not found")
 	}
 }

@@ -1042,8 +1042,6 @@ func convertInputFromMessages(msgs []model.Message, transformOptions model.Trans
 		return ResponsesInput{Text: nonSystemMsgs[0].Content.Content}
 	}
 
-	// Build call_id -> item_id mapping for function_call_output reference
-	callIDToItemID := make(map[string]string)
 	var items []ResponsesItem
 	for _, msg := range msgs {
 		switch msg.Role {
@@ -1052,15 +1050,9 @@ func convertInputFromMessages(msgs []model.Message, transformOptions model.Trans
 		case "user":
 			items = append(items, convertUserMessageToResponses(msg))
 		case "assistant":
-			assistantItems := convertAssistantMessageToResponses(msg)
-			for _, item := range assistantItems {
-				if item.Type == "function_call" && item.ID != "" && item.CallID != "" {
-					callIDToItemID[item.CallID] = item.ID
-				}
-			}
-			items = append(items, assistantItems...)
+			items = append(items, convertAssistantMessageToResponses(msg)...)
 		case "tool":
-			items = append(items, convertToolMessageToResponses(msg, callIDToItemID))
+			items = append(items, convertToolMessageToResponses(msg))
 		}
 	}
 
@@ -1198,7 +1190,7 @@ func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {
 	return sanitizeResponsesItems(items)
 }
 
-func convertToolMessageToResponses(msg model.Message, callIDToItemID map[string]string) ResponsesItem {
+func convertToolMessageToResponses(msg model.Message) ResponsesItem {
 	var output ResponsesInput
 
 	if msg.Content.Content != nil {
@@ -1218,20 +1210,11 @@ func convertToolMessageToResponses(msg model.Message, callIDToItemID map[string]
 		output.Text = lo.ToPtr("")
 	}
 
-	item := ResponsesItem{
+	return ResponsesItem{
 		Type:   "function_call_output",
 		CallID: lo.FromPtr(msg.ToolCallID),
 		Output: &output,
 	}
-
-	// Set item_reference to the corresponding function_call's ID
-	if msg.ToolCallID != nil {
-		if itemID, ok := callIDToItemID[*msg.ToolCallID]; ok {
-			item.ItemReference = lo.ToPtr(itemID)
-		}
-	}
-
-	return item
 }
 
 func convertToolsToResponses(tools []model.Tool) []ResponsesTool {
