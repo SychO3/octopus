@@ -250,6 +250,11 @@ func (o *ResponseOutbound) TransformStreamEvent(ctx context.Context, eventData [
 			events = append(events, model.StreamEvent{Kind: model.StreamEventKindToolCallStart, ID: base.ID, Model: base.Model, Index: base.Index, ToolCall: &toolCall})
 		}
 
+	case "response.output_item.done":
+		if streamEvent.Item != nil && streamEvent.Item.Type == "reasoning" && streamEvent.Item.EncryptedContent != nil && *streamEvent.Item.EncryptedContent != "" {
+			events = append(events, model.StreamEvent{Kind: model.StreamEventKindSignatureDelta, ID: base.ID, Model: base.Model, Index: base.Index, Delta: &model.StreamDelta{Signature: *streamEvent.Item.EncryptedContent}})
+		}
+
 	case "response.reasoning_summary_text.delta":
 		o.mergeReasoningDelta(streamEvent)
 		if streamEvent.Delta != "" {
@@ -942,6 +947,9 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 			Summary:         responsesOptions.ReasoningSummary,
 			GenerateSummary: responsesOptions.ReasoningGenerateSummary,
 		}
+		if req.RawAPIFormat == model.APIFormatAnthropicMessage && result.Reasoning.Summary == nil {
+			result.Reasoning.Summary = lo.ToPtr("auto")
+		}
 	}
 
 	// Pass-through fields
@@ -960,6 +968,19 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 	result.ContextManagement = responsesOptions.ContextManagement
 	result.StreamOptions = responsesOptions.StreamOptions
 	result.Include = req.Include
+	if req.RawAPIFormat == model.APIFormatAnthropicMessage && result.Reasoning != nil {
+		const encryptedReasoning = "reasoning.encrypted_content"
+		found := false
+		for _, include := range result.Include {
+			if include == encryptedReasoning {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result.Include = append(result.Include, encryptedReasoning)
+		}
+	}
 	result.TopLogprobs = req.TopLogprobs
 
 	return result
@@ -1292,11 +1313,12 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 	}
 
 	var (
-		contentParts     []model.MessageContentPart
-		textContent      strings.Builder
-		refusalContent   strings.Builder
-		reasoningContent strings.Builder
-		toolCalls        []model.ToolCall
+		contentParts       []model.MessageContentPart
+		textContent        strings.Builder
+		refusalContent     strings.Builder
+		reasoningContent   strings.Builder
+		reasoningSignature *string
+		toolCalls          []model.ToolCall
 	)
 
 	for _, outputItem := range resp.Output {
@@ -1335,6 +1357,9 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 			for _, summary := range outputItem.Summary {
 				reasoningContent.WriteString(summary.Text)
 			}
+			if outputItem.EncryptedContent != nil && *outputItem.EncryptedContent != "" {
+				reasoningSignature = outputItem.EncryptedContent
+			}
 		case "image_generation_call":
 			if outputItem.Result != nil && *outputItem.Result != "" {
 				outputFormat := "png"
@@ -1363,6 +1388,7 @@ func convertToLLMResponseFromResponses(resp *ResponsesResponse) *model.InternalL
 	if reasoningContent.Len() > 0 {
 		choice.Message.ReasoningContent = lo.ToPtr(reasoningContent.String())
 	}
+	choice.Message.ReasoningSignature = reasoningSignature
 	if refusalContent.Len() > 0 {
 		choice.Message.Refusal = refusalContent.String()
 	}

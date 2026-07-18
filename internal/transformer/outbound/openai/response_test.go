@@ -36,6 +36,7 @@ func TestConvertToResponsesRequestOmitsAnthropicThinkingBudget(t *testing.T) {
 		Model:           "gpt-5.6-luna",
 		ReasoningEffort: "high",
 		ReasoningBudget: &budget,
+		RawAPIFormat:    model.APIFormatAnthropicMessage,
 	}
 
 	body, err := json.Marshal(ConvertToResponsesRequest(req))
@@ -53,6 +54,13 @@ func TestConvertToResponsesRequestOmitsAnthropicThinkingBudget(t *testing.T) {
 	}
 	if _, exists := reasoning["max_tokens"]; exists {
 		t.Fatalf("Responses upstreams reject reasoning.max_tokens, got %#v", reasoning)
+	}
+	if reasoning["summary"] != "auto" {
+		t.Fatalf("Anthropic thinking requires a Responses reasoning summary, got %#v", reasoning)
+	}
+	include, ok := payload["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("Anthropic thinking requires encrypted reasoning continuity, got %#v", payload["include"])
 	}
 }
 
@@ -526,6 +534,24 @@ func TestConvertToLLMResponseFromResponsesPreservesRefusalContent(t *testing.T) 
 	}
 }
 
+func TestConvertToLLMResponseFromResponsesPreservesReasoningSignature(t *testing.T) {
+	signature := "encrypted-reasoning"
+	resp := &ResponsesResponse{Output: []ResponsesItem{{
+		Type:             "reasoning",
+		Summary:          []ResponsesReasoningSummary{{Type: "summary_text", Text: "brief thought"}},
+		EncryptedContent: &signature,
+	}}}
+
+	internalResp := convertToLLMResponseFromResponses(resp)
+	message := internalResp.Choices[0].Message
+	if message == nil || message.ReasoningContent == nil || *message.ReasoningContent != "brief thought" {
+		t.Fatalf("expected reasoning summary, got %#v", message)
+	}
+	if message.ReasoningSignature == nil || *message.ReasoningSignature != signature {
+		t.Fatalf("expected encrypted reasoning signature, got %#v", message)
+	}
+}
+
 func TestConvertToResponsesRequestPreservesImageGenerationTools(t *testing.T) {
 	content := "hello"
 	req := &model.InternalLLMRequest{
@@ -903,5 +929,16 @@ func TestTransformStreamPreservesReasoningDeltaBeforeOutputItemAdded(t *testing.
 	part := summary[0].(map[string]any)
 	if part["type"] != "summary_text" || part["text"] != "step" {
 		t.Fatalf("expected merged reasoning summary, got %#v", part)
+	}
+}
+
+func TestTransformStreamEmitsEncryptedReasoningSignature(t *testing.T) {
+	o := &ResponseOutbound{}
+	events, err := o.TransformStreamEvent(context.Background(), []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","encrypted_content":"encrypted-reasoning"}}`))
+	if err != nil {
+		t.Fatalf("transform reasoning item done: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != model.StreamEventKindSignatureDelta || events[0].Delta == nil || events[0].Delta.Signature != "encrypted-reasoning" {
+		t.Fatalf("expected signature delta, got %#v", events)
 	}
 }
