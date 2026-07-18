@@ -21,6 +21,7 @@ import (
 	"github.com/bestruirui/octopus/internal/relay/balancer"
 	"github.com/bestruirui/octopus/internal/relay/stream"
 	"github.com/bestruirui/octopus/internal/server/resp"
+	"github.com/bestruirui/octopus/internal/tokencount"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	inAnthropic "github.com/bestruirui/octopus/internal/transformer/inbound/anthropic"
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -2095,6 +2096,58 @@ func (ra *relayAttempt) rewriteUpstreamModelInChunk(chunk []byte) []byte {
 	return chunk
 }
 
+func estimateAnthropicInputTokens(body []byte) int64 {
+	var request struct {
+		System   any `json:"system"`
+		Messages any `json:"messages"`
+		Tools    any `json:"tools"`
+	}
+	if len(body) == 0 || json.Unmarshal(body, &request) != nil {
+		return 0
+	}
+	return int64(tokencount.CountAll(request.System, request.Messages, request.Tools))
+}
+
+func rewriteZeroAnthropicStartUsage(chunk []byte, estimatedInputTokens int64) []byte {
+	if estimatedInputTokens <= 0 || !bytes.Contains(chunk, []byte(`"message_start"`)) {
+		return chunk
+	}
+
+	frames, pending := splitCompleteSSEFrames(chunk)
+	for idx, frame := range frames {
+		data := firstSSEData(frame)
+		if len(data) == 0 {
+			continue
+		}
+		var event map[string]any
+		if json.Unmarshal(data, &event) != nil || event["type"] != "message_start" {
+			continue
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok {
+			continue
+		}
+		usage, ok := message["usage"].(map[string]any)
+		if !ok || numericJSONField(usage, "input_tokens") != 0 ||
+			numericJSONField(usage, "cache_read_input_tokens") != 0 ||
+			numericJSONField(usage, "cache_creation_input_tokens") != 0 {
+			continue
+		}
+		usage["input_tokens"] = estimatedInputTokens
+		rewritten, err := json.Marshal(event)
+		if err != nil {
+			continue
+		}
+		frames[idx] = bytes.Replace(frame, data, rewritten, 1)
+	}
+	return append(bytes.Join(frames, nil), pending...)
+}
+
+func numericJSONField(value map[string]any, key string) float64 {
+	number, _ := value[key].(float64)
+	return number
+}
+
 func (ra *relayAttempt) isAnthropicPassthroughStreamRequest() bool {
 	if ra == nil {
 		return false
@@ -2177,6 +2230,7 @@ func (ra *relayAttempt) forwardViaHTTPStandard(ctx context.Context) (int, error)
 // outbound→inbound 双向转换），同时用 outbound.TransformStream 旁路解析事件供 metrics 聚合使用。
 func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Context, response *http.Response) error {
 	defer ra.closeFirstTokenBudget()
+	estimatedInputTokens := estimateAnthropicInputTokens(ra.rawBody)
 
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
@@ -2432,6 +2486,9 @@ func (ra *relayAttempt) handleStreamResponsePassthroughAnthropic(ctx context.Con
 				}
 			}
 		writeChunk:
+			if openAIProtocol == "" {
+				chunk = rewriteZeroAnthropicStartUsage(chunk, estimatedInputTokens)
+			}
 			chunk = ra.rewriteUpstreamModelInChunk(chunk)
 			_, _ = rawStream.Write(chunk)
 			if _, werr := writer.Write(chunk); werr != nil {

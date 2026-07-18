@@ -399,6 +399,28 @@ func TestNormalizeAnthropicPassthroughStreamHeadersOverridesClientJSONAccept(t *
 	}
 }
 
+func TestRewriteZeroAnthropicStartUsageUsesRequestEstimate(t *testing.T) {
+	frame := []byte("event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"output_tokens_details":{"thinking_tokens":0}}}}` + "\n\n")
+
+	got := rewriteZeroAnthropicStartUsage(frame, 269023)
+	data := firstSSEData(got)
+	var event struct {
+		Message struct {
+			Usage map[string]any `json:"usage"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatalf("unmarshal rewritten message_start: %v", err)
+	}
+	if got := event.Message.Usage["input_tokens"]; got != float64(269023) {
+		t.Fatalf("Paseo needs a non-zero message_start input estimate, got %v", got)
+	}
+	if _, ok := event.Message.Usage["output_tokens_details"]; !ok {
+		t.Fatal("provider-specific usage details were dropped during rewrite")
+	}
+}
+
 func TestHandleStreamResponsePassthroughAnthropicDefersSplitOpenAIChatStop(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
