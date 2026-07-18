@@ -341,8 +341,10 @@ function MorphingDialogContainer({ children }: MorphingDialogContainerProps) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           />
-          <div className='fixed inset-0 z-50 flex items-center justify-center'>
-            {children}
+          <div className='fixed inset-0 z-50 overflow-y-auto overscroll-contain'>
+            <div className='flex min-h-full items-center justify-center p-4'>
+              {children}
+            </div>
           </div>
         </>
       )}
